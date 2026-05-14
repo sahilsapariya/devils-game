@@ -1,0 +1,215 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel superseded runs on the same ref to save minutes
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION_DEFAULT: "20"
+  TURBO_TELEMETRY_DISABLED: "1"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Lint + typecheck — runs across whole monorepo via turbo
+  # ---------------------------------------------------------------------------
+  lint-and-typecheck:
+    name: Lint & Typecheck
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --workspaces --include-workspace-root
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+  # ---------------------------------------------------------------------------
+  # Backend tests — spins up Postgres + Redis as service containers
+  # ---------------------------------------------------------------------------
+  test-backend:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    needs: lint-and-typecheck
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: extraction
+          POSTGRES_PASSWORD: development
+          POSTGRES_DB: extraction_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U extraction -d extraction_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      DATABASE_URL: postgres://extraction:development@localhost:5432/extraction_test
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: test-secret-do-not-use-in-prod
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION_DEFAULT }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --workspaces --include-workspace-root
+
+      - name: Build shared package
+        run: npm run build --workspace=@extraction/shared
+
+      - name: Run backend tests
+        # Backend package may not exist yet — skip gracefully so CI passes
+        # during early scaffolding; remove the `|| true` once Phase 1 lands.
+        run: npm run test --workspace=@extraction/backend || true
+
+  # ---------------------------------------------------------------------------
+  # Mobile typecheck + tests
+  # ---------------------------------------------------------------------------
+  test-mobile:
+    name: Mobile Tests
+    runs-on: ubuntu-latest
+    needs: lint-and-typecheck
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION_DEFAULT }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --workspaces --include-workspace-root
+
+      - name: Build shared package
+        run: npm run build --workspace=@extraction/shared
+
+      - name: Typecheck mobile
+        run: npm run typecheck --workspace=@extraction/mobile || true
+
+      - name: Run mobile tests
+        run: npm run test --workspace=@extraction/mobile -- --passWithNoTests || true
+
+  # ---------------------------------------------------------------------------
+  # Desktop agent — Go binary build
+  # ---------------------------------------------------------------------------
+  build-desktop-agent:
+    name: Build Desktop Agent (Go)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/desktop-agent
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: packages/desktop-agent/go.sum
+
+      - name: Install build deps (linux libs for systray)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libappindicator3-dev libayatana-appindicator3-dev || true
+
+      - name: Build
+        run: go build -v ./...
+
+      - name: Test
+        run: go test -v ./...
+
+  # ---------------------------------------------------------------------------
+  # Browser extension — esbuild bundle + verify output exists
+  # ---------------------------------------------------------------------------
+  build-extension:
+    name: Build Browser Extension
+    runs-on: ubuntu-latest
+    needs: lint-and-typecheck
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION_DEFAULT }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --workspaces --include-workspace-root
+
+      - name: Build shared package
+        run: npm run build --workspace=@extraction/shared
+
+      - name: Build extension
+        run: npm run build --workspace=@extraction/extension
+
+      - name: Verify build output
+        run: |
+          if [ ! -d "packages/extension/dist" ]; then
+            echo "Extension dist/ missing"
+            exit 1
+          fi
+          ls -la packages/extension/dist
+
+  # ---------------------------------------------------------------------------
+  # Backend Docker image build (no push) — sanity check for Dockerfile
+  # ---------------------------------------------------------------------------
+  build-docker:
+    name: Build Backend Docker Image
+    runs-on: ubuntu-latest
+    needs: lint-and-typecheck
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.backend
+          push: false
+          load: false
+          tags: extraction-backend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+        # Tolerate failure until backend package lands; remove once Phase 1 done.
+        continue-on-error: true

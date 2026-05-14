@@ -1,0 +1,65 @@
+# Exclude everything that does not belong in a build context.
+
+# Dependencies & build artifacts (re-installed/rebuilt inside image)
+**/node_modules
+**/dist
+**/build
+**/.next
+**/out
+**/.turbo
+**/coverage
+**/.nyc_output
+**/*.tsbuildinfo
+
+# VCS & CI
+.git
+.gitignore
+.gitattributes
+.github
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode
+.idea
+*.swp
+*.swo
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Native / non-backend build outputs
+packages/desktop-agent/bin
+packages/extension/dist
+packages/mobile/android/app/build
+packages/mobile/ios/build
+packages/mobile/.expo
+*.apk
+*.ipa
+*.zip
+*.crx
+
+# Local databases
+*.sqlite
+*.sqlite-journal
+*.db
+
+# Docs & infra (not needed at runtime)
+docs
+infra
+README.md
+
+# Docker files themselves
+Dockerfile*
+docker-compose*.yml
+.dockerignore

@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+    <title>Project Extraction Monitor</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0a0a0a;
+        --bg-elev: #141414;
+        --fg: #f0f0f0;
+        --fg-dim: #888888;
+        --red: #ff3333;
+        --green: #33cc66;
+        --border: #222222;
+        --mono: ui-monospace, 'SF Mono', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--mono);
+        font-size: 12px;
+        letter-spacing: 0.04em;
+      }
+      body {
+        width: 340px;
+        min-height: 320px;
+        padding: 16px;
+      }
+      h1 {
+        font-size: 13px;
+        margin: 0 0 12px 0;
+        color: var(--red);
+        text-transform: uppercase;
+        letter-spacing: 0.15em;
+      }
+      .panel {
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        padding: 10px 12px;
+        margin-bottom: 10px;
+      }
+      .row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 4px 0;
+      }
+      .label {
+        color: var(--fg-dim);
+        text-transform: uppercase;
+        font-size: 10px;
+        letter-spacing: 0.1em;
+      }
+      .value {
+        color: var(--fg);
+        font-weight: 600;
+      }
+      .value.ok { color: var(--green); }
+      .value.err { color: var(--red); }
+      .actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      button {
+        flex: 1;
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--fg);
+        padding: 8px 10px;
+        font-family: var(--mono);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        cursor: pointer;
+        transition: background 0.15s ease, border-color 0.15s ease;
+      }
+      button:hover { background: #1c1c1c; border-color: #333; }
+      button.danger { color: var(--red); border-color: #441111; }
+      button.danger:hover { background: #1a0a0a; }
+      input[type="text"], input[type="password"], input[type="url"] {
+        width: 100%;
+        background: #0a0a0a;
+        border: 1px solid var(--border);
+        color: var(--fg);
+        padding: 6px 8px;
+        font-family: var(--mono);
+        font-size: 11px;
+        margin-top: 4px;
+      }
+      input:focus { outline: none; border-color: var(--red); }
+      .field { margin-bottom: 8px; }
+      .field label {
+        color: var(--fg-dim);
+        text-transform: uppercase;
+        font-size: 10px;
+        letter-spacing: 0.1em;
+        display: block;
+      }
+      .status-dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        margin-right: 6px;
+        background: var(--fg-dim);
+      }
+      .status-dot.ok { background: var(--green); }
+      .status-dot.err { background: var(--red); }
+      footer {
+        margin-top: 12px;
+        color: var(--fg-dim);
+        font-size: 10px;
+        text-align: center;
+        letter-spacing: 0.1em;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>PROJECT EXTRACTION</h1>
+
+    <section class="panel" id="status-panel">
+      <div class="row">
+        <span class="label">Backend</span>
+        <span class="value" id="backend-status"><span class="status-dot" id="backend-dot"></span>Checking</span>
+      </div>
+      <div class="row">
+        <span class="label">Round</span>
+        <span class="value" id="round-status">Unknown</span>
+      </div>
+      <div class="row">
+        <span class="label">Auth</span>
+        <span class="value" id="auth-status">Not signed in</span>
+      </div>
+      <div class="row">
+        <span class="label">Active Domain</span>
+        <span class="value" id="active-domain">—</span>
+      </div>
+      <div class="row">
+        <span class="label">Queue</span>
+        <span class="value" id="queue-length">0</span>
+      </div>
+      <div class="row">
+        <span class="label">Last Batch</span>
+        <span class="value" id="last-batch">Never</span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="field">
+        <label for="api-base">API Base URL</label>
+        <input type="url" id="api-base" placeholder="http://localhost:3001/api" />
+      </div>
+      <div class="field">
+        <label for="auth-token">Auth Token</label>
+        <input type="password" id="auth-token" placeholder="Bearer token" autocomplete="off" />
+      </div>
+      <div class="actions">
+        <button id="save-settings">Save</button>
+        <button id="clear-token" class="danger">Clear Token</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="actions">
+        <button id="toggle-pause">Pause</button>
+        <button id="force-flush">Flush</button>
+      </div>
+    </section>
+
+    <footer>OPERATIONAL SENSOR // METADATA ONLY</footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

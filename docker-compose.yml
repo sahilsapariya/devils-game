@@ -1,0 +1,73 @@
+# PROJECT EXTRACTION - Local Development Stack
+#
+# Brings up the data plane services (PostgreSQL, Redis) and optional local LLM
+# (Ollama) needed by the backend during development.
+#
+# Usage:
+#   docker compose up -d         # start services in background
+#   docker compose ps            # check health
+#   docker compose down          # stop services (keeps volumes)
+#   docker compose down -v       # stop and remove volumes (wipes data)
+#
+# Backend, mobile, desktop-agent, and browser-extension packages are run on
+# the host via `npm run dev` (turbo) — only stateful infra lives in compose.
+
+services:
+  # PostgreSQL — primary event store and relational database
+  # Schema is managed by backend migrations (TypeORM / Prisma per Phase 1)
+  postgres:
+    image: postgres:15-alpine
+    container_name: extraction-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: extraction
+      POSTGRES_PASSWORD: development
+      POSTGRES_DB: extraction_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U extraction -d extraction_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Redis — pub/sub, rate limiting, session cache, BullMQ job queue
+  # Append-only persistence ensures dev-time durability between restarts.
+  redis:
+    image: redis:7-alpine
+    container_name: extraction-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Ollama — optional local LLM runtime for offline announcement generation
+  # In production, the backend can be configured to call a hosted model instead.
+  # Enable via:  docker compose --profile ai up -d
+  ollama:
+    image: ollama/ollama:latest
+    container_name: extraction-ollama
+    restart: unless-stopped
+    profiles: ["ai"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  ollama_data:
+    driver: local

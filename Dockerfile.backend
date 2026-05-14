@@ -1,0 +1,56 @@
+# PROJECT EXTRACTION - Backend production image
+# Multi-stage build for the @extraction/backend NestJS service.
+#
+# Build context: repo root
+#   docker build -f Dockerfile.backend -t extraction-backend:local .
+
+# -----------------------------------------------------------------------------
+# Stage 1: dependency installation (cacheable layer)
+# -----------------------------------------------------------------------------
+FROM node:20-alpine AS deps
+WORKDIR /app
+
+# Copy only manifests so npm ci can be cached when source changes
+COPY package.json package-lock.json* turbo.json ./
+COPY packages/shared/package.json ./packages/shared/
+COPY packages/backend/package.json ./packages/backend/
+
+RUN npm ci --workspaces --include-workspace-root
+
+# -----------------------------------------------------------------------------
+# Stage 2: builder — compiles shared then backend
+# -----------------------------------------------------------------------------
+FROM node:20-alpine AS builder
+WORKDIR /app
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+
+RUN npm run build --workspace=@extraction/shared
+RUN npm run build --workspace=@extraction/backend
+
+# -----------------------------------------------------------------------------
+# Stage 3: runtime — minimal image, non-root user, healthcheck
+# -----------------------------------------------------------------------------
+FROM node:20-alpine AS runner
+WORKDIR /app
+
+ENV NODE_ENV=production \
+    PORT=3001
+
+# wget is provided by busybox in node:20-alpine — used for healthcheck
+
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 nestjs
+
+COPY --from=builder --chown=nestjs:nodejs /app/packages/backend/dist ./dist
+COPY --from=builder --chown=nestjs:nodejs /app/packages/backend/package.json ./
+COPY --from=builder --chown=nestjs:nodejs /app/node_modules ./node_modules
+
+USER nestjs
+EXPOSE 3001
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3001/health || exit 1
+
+CMD ["node", "dist/main.js"]
