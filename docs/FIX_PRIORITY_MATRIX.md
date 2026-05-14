@@ -3,12 +3,17 @@
 **Date:** 2026-05-15
 **Companion to:** `IMPLEMENTATION_VERIFICATION_REPORT.md`
 **Audit commit:** `720e751`
+**Status update commit:** `d7bfb2b` (architecture simplification)
+
+> **⚠️ Status update after simplification pass (`d7bfb2b`):** The architecture pivoted from SaaS-style (Postgres + Redis + K8s) to single-user self-hosted (SQLite + in-memory + single VPS). Many items in this matrix are now **OBSOLETE** because they only existed to mitigate problems caused by the SaaS-style infrastructure that no longer exists. See `docs/simplification/` for current architecture. This document is preserved for historical context; items have been marked with their current status.
 
 Ranked strictly by impact on runtime correctness. Fix top-to-bottom — each prerequisite blocks the ones below it.
 
 ---
 
 ## P0 — CRITICAL RUNTIME BLOCKERS (must fix to make ANYTHING run)
+
+**Status after `d7bfb2b`:** All three P0 items **RESOLVED** in Sprint 1 (commit `cf2bcf1`). System runs end-to-end. Kept here for traceability.
 
 ### P0-1: Backend `rootDir` violation prevents compile + boot
 
@@ -120,9 +125,13 @@ cd packages/mobile && npx tsc --noEmit  # must exit 0
 
 ## P1 — INTEGRATION CORRECTNESS (system is up, but parts don't talk)
 
-### P1-1: Wire BullMQ workers properly
+**Status after `d7bfb2b`:** Most P1 items are **OBSOLETE** — they only existed because of the multi-pod SaaS architecture. The simplified single-process backend has no need for BullMQ workers (synchronous side-effect dispatch is fine for one user), no need for a Socket.io Redis adapter (single node), and the mobile background service requirement remains valid but is product-level work, not infra.
 
-**Why:** Currently the event processor publishes side-effect signals via Redis pub/sub strings like `extraction:work:scoring`. Nothing consumes them. Scoring, difficulty updates, and announcement generation happen synchronously in the request path.
+### P1-1 [OBSOLETE]: Wire BullMQ workers properly
+
+~~**Why:** Currently the event processor publishes side-effect signals via Redis pub/sub strings like `extraction:work:scoring`. Nothing consumes them. Scoring, difficulty updates, and announcement generation happen synchronously in the request path.~~
+
+**OBSOLETE:** Redis was removed entirely in `d7bfb2b`. Side-effects now run synchronously in the single-process backend via `OperationalEventBus` (Node EventEmitter). For a single-user workload (< 10 events/sec peak), this is the correct design. BullMQ would be appropriate only at multi-tenant scale, which is no longer a goal.
 
 **Files to edit:**
 - `packages/backend/src/modules/events/events.module.ts` — register `BullModule.registerQueue({ name: 'events' })`
@@ -133,9 +142,11 @@ cd packages/mobile && npx tsc --noEmit  # must exit 0
 
 ---
 
-### P1-2: Socket.io Redis adapter wiring
+### P1-2 [OBSOLETE]: Socket.io Redis adapter wiring
 
-**Why:** Mobile clients connecting to different backend pods won't receive each other's events. Multi-pod scaling breaks.
+**OBSOLETE:** No more multi-pod deployment — single VPS, single Node process. Default Socket.io `IoAdapter` is correct.
+
+~~**Why:** Mobile clients connecting to different backend pods won't receive each other's events. Multi-pod scaling breaks.~~
 
 **File:** `packages/backend/src/main.ts`
 
@@ -186,6 +197,8 @@ app.useWebSocketAdapter(ioAdapter);
 
 ## P2 — SECURITY HARDENING (before any non-trivial deployment)
 
+**Status after `d7bfb2b`:** P2-1 (HMAC verification) and P2-2 (rate limiting) remain valid for any internet-exposed deployment. P2-3 (mTLS) is **DEFERRED INDEFINITELY** — for a single-user system the `INTERNAL_API_TOKEN` shared secret is sufficient since backend and ai-service run in the same Docker network on the same VPS.
+
 ### P2-1: Implement real HMAC verification
 
 **File:** `packages/backend/src/modules/telemetry/telemetry.service.ts:71`
@@ -215,20 +228,22 @@ app.useWebSocketAdapter(ioAdapter);
 
 ---
 
-## P3 — OPERATIONAL READINESS (before public users)
+## P3 — OPERATIONAL READINESS
 
-| Item | Why |
+**Status after `d7bfb2b`:** Many items are now obsolete because the simplified architecture doesn't have the problem they were solving. Surviving items are tagged.
+
+| Item | Status |
 |---|---|
-| Migrate AI voice cache to S3 | Multi-replica safety |
-| Add OTEL/Sentry instrumentation | Distributed tracing across mobile → backend → ai-service |
-| Add Prometheus metrics endpoints | Provider latency, queue depth, fallback rate |
-| Sign desktop agent binary + notarize | macOS distribution |
-| Ship LaunchAgent plist for desktop | Auto-start at login |
-| Set up event snapshot recurring job | Replay perf degrades without snapshots |
-| Push notification setup (APNs/FCM) | Deliver critical announcements when app is killed |
-| Production secret management | Vault / KMS instead of `.env` |
-| Real Ollama TTS sidecar | Currently assumed Piper plugin doesn't exist |
-| Provision ElevenLabs voice ID | Currently env placeholder |
+| ~~Migrate AI voice cache to S3~~ | **OBSOLETE** — single VPS with local bind mount is sufficient |
+| ~~Add OTEL/Sentry instrumentation~~ | **DEFERRED** — for single-user, `docker compose logs` + SQLite `operational_logs` table is sufficient |
+| ~~Add Prometheus metrics endpoints~~ | **OBSOLETE** — no fleet to monitor |
+| Sign desktop agent binary + notarize | **VALID** — only if you distribute publicly. For personal use on your own machines, run the unsigned binary (`xattr -dr com.apple.quarantine ./bin/agent` once) |
+| Ship LaunchAgent plist for desktop | **VALID** — auto-start at login. Template provided in `docs/simplification/VPS_DEPLOYMENT_GUIDE.md` § "Optional macOS LaunchAgent" |
+| Set up event snapshot recurring job | **VALID** — for long-running personal use, replay performance still benefits; low priority |
+| ~~Push notification setup (APNs/FCM)~~ | **DEFERRED** — single-user can manually open the app; APNs requires Apple Dev Program ($99/yr) |
+| ~~Production secret management (Vault / KMS)~~ | **OBSOLETE** — `.env.production` file on the VPS (mode 600, root-owned) is correct for single-user |
+| Real Ollama TTS sidecar | **OPTIONAL** — only needed if you want offline TTS; ElevenLabs or text-only fallback work fine |
+| Provision ElevenLabs voice ID | **OPTIONAL** — only if you want voice announcements |
 
 ---
 

@@ -2,7 +2,9 @@
 
 Local development setup, runtime operation, and production deployment.
 
-**Status as of `cf2bcf1`:** All 6 packages compile clean. Full E2E verified: register → login → mission → round → telemetry → announcement.
+**Status as of `d7bfb2b` (post architecture simplification):** All 6 packages compile clean. Full E2E verified on the simplified SQLite + in-memory + OpenAI stack.
+
+> **⚠️ Architecture simplification (May 2026):** The system no longer uses PostgreSQL, Redis, or Kubernetes. It uses **SQLite** (two databases, WAL mode), **in-memory** cache and event bus, and deploys to a **single VPS** behind Caddy. For production deployment, use [`docs/simplification/VPS_DEPLOYMENT_GUIDE.md`](docs/simplification/VPS_DEPLOYMENT_GUIDE.md) — it is the authoritative production guide. The "Production Deployment" section below has been updated to point there.
 
 ---
 
@@ -109,21 +111,10 @@ NODE_ENV=development
 PORT=3001
 API_PREFIX=api
 
-# Database (matches docker-compose defaults)
-DATABASE_HOST=localhost
-DATABASE_PORT=5432
-DATABASE_USERNAME=extraction
-DATABASE_PASSWORD=development
-DATABASE_NAME=extraction_dev
-DATABASE_SSL=false
-DATABASE_POOL_SIZE=10
+# SQLite (auto-created on first migration run)
+DATABASE_PATH=./data/operational.db
+TELEMETRY_DATABASE_PATH=./data/telemetry.db
 DATABASE_LOGGING=false
-
-# Redis
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_DB=0
-REDIS_KEY_PREFIX=extraction
 
 # Auth secrets (USE YOUR GENERATED VALUES)
 JWT_SECRET=<paste-your-openssl-rand-hex-32-here>
@@ -179,22 +170,24 @@ INTERNAL_API_TOKEN=<paste-your-openssl-rand-hex-32>
 EOF
 ```
 
-### Start infrastructure (PostgreSQL + Redis)
+### Start infrastructure (none required — SQLite + in-memory)
+
+The system no longer needs PostgreSQL or Redis containers. SQLite databases are auto-created on first boot. The only optional service in `docker-compose.yml` is Ollama (opt-in via `--profile ai`):
 
 ```bash
-docker compose up -d postgres redis
-
-# Wait a few seconds, then verify
-docker compose exec postgres pg_isready -U extraction   # → accepting connections
-docker compose exec redis redis-cli ping                # → PONG
+# Nothing to start by default
+# If you want local AI fallback:
+docker compose --profile ai up -d ollama
 ```
 
 ### Apply database migrations
 
 ```bash
 cd packages/backend
+mkdir -p data
 npm run migration:run
-# Expected: 11 tables created (or "No migrations are pending" if already applied)
+# Creates ./data/operational.db and ./data/telemetry.db with WAL mode
+# (Migration also auto-runs on backend boot via migrationsRun: true.)
 cd ../..
 ```
 
@@ -491,193 +484,85 @@ pkill -f "nest start"
 
 ## PRODUCTION DEPLOYMENT
 
-This is the architecture. Adapt to your specific cloud / on-prem setup.
+**Production deployment is now a single-VPS Docker Compose setup behind Caddy.** The previous Kubernetes-based plan has been retired. See [`docs/simplification/VPS_DEPLOYMENT_GUIDE.md`](docs/simplification/VPS_DEPLOYMENT_GUIDE.md) for the full step-by-step setup (~30 minutes, ~$6/month).
 
-### Infrastructure components
+### TL;DR
+
+1. Provision a $5/month VPS (Hetzner CPX11 or equivalent, Ubuntu 24.04)
+2. Point a domain at it via DNS A record
+3. SSH in and run `scripts/vps-bootstrap.sh` (installs Docker, configures UFW, creates `/opt/extraction/data/`)
+4. `git clone` the repo, copy `.env.production.example` → `.env.production`, fill in: JWT secrets, `OPENAI_API_KEY`, `DOMAIN`, `ACME_EMAIL`
+5. Copy `Caddyfile.example` → `Caddyfile`, replace placeholder domain
+6. `docker compose -f docker-compose.prod.yml up -d`
+7. Wait ~30 seconds for Caddy to provision a Let's Encrypt cert
+8. `curl https://<domain>/health` → 200
+
+### Production architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                  CDN / Edge                              │
-│  (CloudFront / Cloudflare / Vercel)                      │
-└───────────────────────┬─────────────────────────────────┘
-                        │
-            ┌───────────▼────────────┐
-            │   Load Balancer        │
-            │   (ALB / GCP LB / NGINX)│
-            │   TLS termination      │
-            └───────────┬────────────┘
-                        │
-        ┌───────────────┴───────────────┐
-        │                               │
-┌───────▼────────┐              ┌──────▼─────────┐
-│ Backend Pods   │              │ AI Service     │
-│ (3+ replicas)  │◄────internal──┤ (2+ replicas) │
-│ NestJS         │               │ NestJS         │
-│ :3001          │               │ :4001          │
-└───┬────────┬───┘               └────────────────┘
-    │        │
-    │ ┌──────▼───┐          ┌─────────────┐
-    └─▶│  Redis   │          │ ElevenLabs  │
-      │ Cluster  │          │ + Anthropic │
-      │ (3-node) │          │ (external)  │
-      └──────────┘          └─────────────┘
-            │
-    ┌───────▼────────┐
-    │  PostgreSQL    │
-    │  (managed:     │
-    │   RDS/CloudSQL)│
-    └────────────────┘
+   HTTPS (auto Let's Encrypt via Caddy)
+                  │
+   ┌──────────────▼──────────────┐
+   │   VPS (single, ~$5/mo)      │
+   │                             │
+   │   ┌────────────────────┐    │
+   │   │  Caddy (80/443)    │    │
+   │   └─┬──────────────┬───┘    │
+   │     │              │        │
+   │  ┌──▼──────┐  ┌────▼────┐   │
+   │  │ Backend │  │AI       │   │
+   │  │ NestJS  │  │Service  │   │
+   │  │ SQLite  │  │OpenAI   │   │
+   │  │ in-mem  │  │client   │   │
+   │  └─────────┘  └─────────┘   │
+   │                             │
+   │   ./data/operational.db     │
+   │   ./data/telemetry.db       │
+   └─────────────────────────────┘
 ```
 
-### Production checklist
+Three containers (`caddy`, `backend`, `ai-service`), bind-mounted `./data` for SQLite + voice cache. Total RAM: ~300 MB.
 
-#### 1. Managed services
-
-- **PostgreSQL:** AWS RDS, GCP CloudSQL, Aiven, Supabase, etc. NOT a containerized statefulset in production unless you really know what you're doing.
-- **Redis:** AWS ElastiCache, GCP Memorystore, Upstash, etc. 3-node cluster minimum for HA.
-- **Object storage (for voice cache):** S3, GCS, R2.
-
-#### 2. Secrets management
-
-- Never bake secrets into images. Use:
-  - AWS Secrets Manager + External Secrets Operator (if on K8s)
-  - GCP Secret Manager
-  - HashiCorp Vault
-- Rotate JWT secrets, HMAC keys, and INTERNAL_API_TOKEN regularly.
-
-#### 3. Backend deployment
+### Backups
 
 ```bash
-# Build production image
-docker build -f Dockerfile.backend -t your-registry/extraction-backend:v1 .
-docker push your-registry/extraction-backend:v1
-
-# Apply K8s manifests (templates exist in infra/k8s/)
-kubectl apply -f infra/k8s/namespace.yaml
-kubectl apply -f infra/k8s/configmap.yaml
-# Fill in infra/k8s/secret.yaml from your secrets manager — NEVER commit it
-kubectl apply -f infra/k8s/backend-deployment.yaml
-kubectl apply -f infra/k8s/backend-service.yaml
-kubectl apply -f infra/k8s/ingress.yaml
+# Atomic snapshot via SQLite VACUUM INTO
+/opt/extraction/scripts/backup-sqlite.sh
+# → /opt/extraction/data/backups/YYYY-MM-DD-HHMM/{operational.db, telemetry.db}
 ```
 
-#### 4. AI service deployment
+Add to cron for nightly backups. Optionally `rclone` to off-site storage (Cloudflare R2, Backblaze B2 — ~$0.50/month).
 
-Same pattern as backend. Build the Dockerfile in `packages/ai-service/Dockerfile`, push, apply manifests (templates not yet provided — clone `backend-deployment.yaml` as starting point).
+### CI/CD
 
-Critical production tweaks for AI service:
-- Mount a shared volume or use S3 for `VOICE_CACHE_DIR` so multi-replica caching works
-- Set `OLLAMA_TTS_MODEL` only if you've actually deployed an Ollama TTS sidecar
-- Provision a real ElevenLabs voice ID
-
-#### 5. Database migrations in CI/CD
-
-In your deploy pipeline, before rolling out new backend pods:
+`.github/workflows/deploy.yml` provides SSH-based deploy via `appleboy/ssh-action`. Required secrets: `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY`, `DOMAIN`. Manual approval gate via GitHub `production` environment.
 
 ```bash
-docker run --rm --env-file .env.production \
-  your-registry/extraction-backend:v1 \
-  npm run migration:run
+ssh root@vps "cd /opt/extraction && git pull && docker compose -f docker-compose.prod.yml up -d --build"
 ```
 
-#### 6. Backend env vars for production
+### What's no longer required
 
-```
-NODE_ENV=production
-PORT=3001
-API_PREFIX=api
-DATABASE_HOST=<managed-pg-endpoint>
-DATABASE_PORT=5432
-DATABASE_USERNAME=<from-secrets>
-DATABASE_PASSWORD=<from-secrets>
-DATABASE_NAME=extraction_prod
-DATABASE_SSL=true
-DATABASE_POOL_SIZE=20
-REDIS_HOST=<managed-redis-endpoint>
-REDIS_PORT=6379
-REDIS_PASSWORD=<from-secrets>
-JWT_SECRET=<from-secrets, 64+ chars>
-JWT_REFRESH_SECRET=<from-secrets>
-JWT_ACCESS_EXPIRES_IN=15m
-JWT_REFRESH_EXPIRES_IN=14d
-BCRYPT_ROUNDS=12
-CORS_ORIGINS=https://app.your-domain.com
-LOG_LEVEL=warn
-AI_SERVICE_URL=http://ai-service.extraction.svc.cluster.local:4001
-HMAC_VERIFICATION_ENABLED=true  # ENABLE in prod
-```
+The previous architecture's requirements list has been retired:
+- ❌ Managed PostgreSQL (RDS / CloudSQL) — now SQLite
+- ❌ Managed Redis cluster (ElastiCache / Memorystore) — now in-memory
+- ❌ Kubernetes cluster (EKS / GKE) — now Docker Compose
+- ❌ Application Load Balancer + ACM — now Caddy with auto Let's Encrypt
+- ❌ Object storage for voice cache — now local bind mount (single replica)
+- ❌ External Secrets Operator — now `.env.production` file (mode 600, root-owned)
+- ❌ OTEL + Sentry + Prometheus stack — now Docker logs + SQLite `operational_logs` audit table
 
-#### 7. Observability
+### Cost
 
-Set these to enable instrumentation (Phase 3+ wiring needed):
-- `OTEL_EXPORTER_OTLP_ENDPOINT=...` (Honeycomb, Datadog, Tempo, etc)
-- `SENTRY_DSN=...` (error tracking)
-- Add Prometheus annotations to deployment manifests
+| Item | Monthly |
+|---|---|
+| VPS (Hetzner CPX11) | ~$5 |
+| Domain (annualized) | $1 |
+| OpenAI API (gpt-5.4-nano with caching) | $1-3 |
+| ElevenLabs TTS (optional Starter) | $0-5 |
+| **Total** | **$7-15** |
 
-#### 8. Mobile app distribution
-
-- **Internal testing:** Expo EAS Build → TestFlight (iOS) + Google Play Internal Track (Android)
-  ```bash
-  cd packages/mobile
-  npx eas build --platform ios
-  npx eas build --platform android
-  ```
-- **Public release:** Submit to App Store / Play Store. Requires:
-  - Apple Developer account ($99/year)
-  - Google Play Developer account ($25 one-time)
-  - App icons, screenshots, privacy policy URL
-
-#### 9. Desktop agent distribution
-
-For internal team use:
-- Build per-arch binaries: `GOOS=darwin GOARCH=arm64 go build ...` and `GOOS=darwin GOARCH=amd64 go build ...`
-- Distribute via internal package manager or shared drive
-
-For public distribution:
-- Apple Developer ID certificate ($99/year) for code signing
-- `codesign --sign "Developer ID Application: Your Name" --options runtime ./bin/agent`
-- Notarize with `xcrun notarytool submit` (required for macOS Gatekeeper)
-- Ship a `LaunchAgent` plist for auto-start at login (template not yet provided; Phase 3)
-
-#### 10. Browser extension distribution
-
-- **Chrome Web Store:** Create developer account ($5 one-time fee), upload `packages/extension/dist/` as a ZIP, submit for review. Approval typically takes 1-3 days.
-- **Self-hosted enterprise:** Distribute the unpacked extension and use Chrome's enterprise policies to allow it.
-
-#### 11. CI/CD
-
-GitHub Actions workflows are in `.github/workflows/`:
-- `ci.yml` — runs on every PR (lint, typecheck, build, tests)
-- `deploy.yml` — placeholder; gated by `staging` / `production` GitHub environments with manual approval
-
-Configure your registry credentials as GitHub Secrets:
-- `DOCKER_REGISTRY_URL`
-- `DOCKER_REGISTRY_USERNAME`
-- `DOCKER_REGISTRY_PASSWORD`
-- `KUBECONFIG` (base64-encoded)
-
-#### 12. Backup & disaster recovery
-
-- **Database backups:** Managed PG providers do this automatically; verify retention (≥30 days recommended).
-- **Manual snapshot:** `docker compose exec postgres pg_dump -U extraction extraction_dev > backup.sql`
-- **Restore:** `docker compose exec -T postgres psql -U extraction extraction_dev < backup.sql`
-- **Redis:** generally ephemeral, but enable AOF persistence if event stream replay matters across restarts
-
-#### 13. Production hardening required (not yet implemented)
-
-Before serving real users:
-
-- [ ] Wire BullMQ consumers (currently inline event processing — slow)
-- [ ] Wire Socket.io Redis adapter in `main.ts` (currently single-server only)
-- [ ] Implement real HMAC verification in `telemetry.service.ts` (currently returns `true`)
-- [ ] Add rate limiting via `@nestjs/throttler`
-- [ ] Wire OTEL + Sentry instrumentation
-- [ ] Implement mobile background service (Expo task-manager + iOS background modes + Android foreground service)
-- [ ] Wire `stats:update` socket emission from event processor
-- [ ] Provision actual ElevenLabs voice ID
-- [ ] Replace `INTERNAL_API_TOKEN` shared secret with mTLS or signed service-to-service JWT
-
-See `docs/FIX_PRIORITY_MATRIX.md` for the full prioritized list.
+See [`docs/simplification/UPDATED_COST_PROFILE.md`](docs/simplification/UPDATED_COST_PROFILE.md) for the breakdown.
 
 ---
 

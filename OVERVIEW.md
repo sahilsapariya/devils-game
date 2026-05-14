@@ -2,14 +2,23 @@
 
 A complete reference covering what the system is, what it does, how it's built, what it takes to run locally, and what's required to ship it to production.
 
-**Status:** Phase 1 + Phase 2 + Sprint 1 fixes complete and verified end-to-end on real infrastructure. See [`RUNNING.md`](RUNNING.md) for operational steps.
+**Architecture status:** Simplified for single-user self-hosted deployment (commit `d7bfb2b`).
+
+> **⚠️ Architecture simplification (May 2026):** The project pivoted from SaaS-oriented to **single-user self-hosted**. PostgreSQL and Redis were removed in favor of SQLite + in-memory state. Kubernetes was deleted in favor of a single VPS + Caddy. The primary AI provider is now OpenAI (was Anthropic). **For the current architecture, read [`docs/simplification/`](docs/simplification/) — those documents are authoritative.** This overview has been updated to reflect the simplified state.
 
 **Companion documents:**
-- [`docs/PROJECT_EXTRACTION_SPECIFICATION.md`](docs/PROJECT_EXTRACTION_SPECIFICATION.md) — full production-grade architecture spec
-- [`docs/IMPLEMENTATION_ROADMAP.md`](docs/IMPLEMENTATION_ROADMAP.md) — phased build plan
-- [`docs/IMPLEMENTATION_VERIFICATION_REPORT.md`](docs/IMPLEMENTATION_VERIFICATION_REPORT.md) — audit findings
-- [`docs/FIX_PRIORITY_MATRIX.md`](docs/FIX_PRIORITY_MATRIX.md) — what still needs hardening
-- [`RUNNING.md`](RUNNING.md) — boot sequence + troubleshooting + prod deployment
+
+Current (read these first):
+- [`docs/simplification/ARCHITECTURE_SIMPLIFICATION_PLAN.md`](docs/simplification/ARCHITECTURE_SIMPLIFICATION_PLAN.md) — 12 changes + rationale
+- [`docs/simplification/UPDATED_DEPLOYMENT_ARCHITECTURE.md`](docs/simplification/UPDATED_DEPLOYMENT_ARCHITECTURE.md) — single-VPS layout
+- [`docs/simplification/VPS_DEPLOYMENT_GUIDE.md`](docs/simplification/VPS_DEPLOYMENT_GUIDE.md) — 30-min setup walkthrough
+- [`docs/simplification/UPDATED_COST_PROFILE.md`](docs/simplification/UPDATED_COST_PROFILE.md) — $6-15/mo total
+- [`docs/simplification/SQLITE_MIGRATION_PLAN.md`](docs/simplification/SQLITE_MIGRATION_PLAN.md) and [`REDIS_REMOVAL_PLAN.md`](docs/simplification/REDIS_REMOVAL_PLAN.md) — refactor detail
+- [`RUNNING.md`](RUNNING.md) — boot sequence + troubleshooting
+
+Historical (kept for context; superseded by the simplification docs where they conflict):
+- [`docs/PROJECT_EXTRACTION_SPECIFICATION.md`](docs/PROJECT_EXTRACTION_SPECIFICATION.md) — original architecture spec (state machine, immersion engine, telemetry pipeline still authoritative; deployment + infrastructure sections superseded)
+- [`docs/IMPLEMENTATION_ROADMAP.md`](docs/IMPLEMENTATION_ROADMAP.md), [`IMPLEMENTATION_VERIFICATION_REPORT.md`](docs/IMPLEMENTATION_VERIFICATION_REPORT.md), [`FIX_PRIORITY_MATRIX.md`](docs/FIX_PRIORITY_MATRIX.md)
 
 ---
 
@@ -294,26 +303,26 @@ See [`docs/PROJECT_EXTRACTION_SPECIFICATION.md`](docs/PROJECT_EXTRACTION_SPECIFI
 | Framework | NestJS | 10.4.x |
 | Language | TypeScript | 5.5+ (strict mode) |
 | ORM | TypeORM | 0.3.x |
-| Database | PostgreSQL | 15 |
-| Cache / Streams / Pub-Sub | Redis | 7 |
+| Database | **SQLite** (dual: operational.db + telemetry.db, WAL mode) | via `better-sqlite3` |
+| Cache | In-memory `lru-cache` | — |
+| Pub/Sub | Node.js `EventEmitter` (`OperationalEventBus`) | — |
 | Auth | Passport + JWT (`@nestjs/jwt`) | 10.x |
 | Password hashing | bcrypt | 12 rounds |
 | Real-time | Socket.io | 4.7 |
-| Queue (planned) | BullMQ | 5.x |
 | Validation | class-validator + class-transformer | — |
-| Redis client | ioredis | 5.x |
 
 ### AI Service
 | Layer | Technology | Notes |
 |---|---|---|
 | Framework | NestJS | same as backend |
-| LLM (cloud) | Anthropic Claude | Haiku 4.5 default (`claude-haiku-4-5-20251001`) |
-| LLM (local fallback) | Ollama | Llama 3.1 8B or Mistral 7B |
-| TTS (cloud) | ElevenLabs | `eleven_turbo_v2_5` model |
-| TTS (local fallback) | Ollama TTS sidecar | Piper / Coqui (community plugin) |
+| LLM (primary) | **OpenAI** | `gpt-5.4-nano` default (override via env to e.g. `gpt-4o-mini`) |
+| LLM (alternate) | Anthropic Claude | Haiku 4.5 (set `AI_PROVIDER=claude`) |
+| LLM (offline option) | Ollama | Llama 3.1 8B (set `AI_PROVIDER=ollama`) |
+| TTS (optional, cloud) | ElevenLabs | `eleven_turbo_v2_5` model — skip for text-only |
+| TTS (optional, local) | Ollama TTS sidecar | community plugin |
 | HTTP client | axios | — |
-| Cache | lru-cache | in-memory, 100 entries / 1h TTL |
-| Voice storage | local filesystem | S3 in production |
+| Cache | lru-cache | 500 entries / per-type TTL (10m / 24h / 7d) |
+| Voice storage | local filesystem (bind mount on VPS) | — |
 
 ### Mobile
 | Layer | Technology | Version |
@@ -364,10 +373,11 @@ See [`docs/PROJECT_EXTRACTION_SPECIFICATION.md`](docs/PROJECT_EXTRACTION_SPECIFI
 |---|---|
 | Monorepo | npm workspaces + Turborepo |
 | Container runtime | Docker / Docker Compose |
-| Orchestration (production) | Kubernetes |
+| Production orchestration | **Single VPS + Docker Compose** (Kubernetes removed) |
 | CI | GitHub Actions |
-| Process management (production) | K8s Deployments + StatefulSets |
-| Ingress (production) | NGINX + cert-manager (Let's Encrypt) |
+| Production deploy | SSH-based via `appleboy/ssh-action` |
+| Reverse proxy + TLS | **Caddy** (auto Let's Encrypt) |
+| Backup | `scripts/backup-sqlite.sh` (VACUUM INTO + 30-day retention) |
 
 ---
 
