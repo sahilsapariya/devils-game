@@ -7,24 +7,24 @@ import {
   STATE_TRANSITION,
 } from '@extraction/shared';
 
+import { CacheService } from '../cache/cache.service';
 import { EventEntity } from '../../database/entities/event.entity';
 import { RoundEntity } from '../../database/entities/round.entity';
-import { RedisService } from '../redis/redis.service';
-import { EventsService } from './events.service';
 import { EventSnapshotService } from './event-snapshot.service';
+import { EventsService } from './events.service';
+import { OperationalEventBus } from './operational-event-bus.service';
 
 /**
  * Event-processor side-effect dispatcher.
  *
- * Designed to be invoked from a BullMQ consumer (queue: `events`).
- * Until BullMQ is wired in, callers can invoke `process(eventId)` directly.
+ * Invoked directly by callers (we no longer route through BullMQ).
  *
  * Idempotency: events with `is_processed = true` are short-circuited.
  *
  * Side effects per event type:
- *  - round.completed      → enqueue scoring + difficulty update + announcement
- *  - behavior.distraction → increment violation counter; check threshold
- *  - state.transition     → update Redis cache `user:${userId}:current_state`
+ *  - round.completed      → publish work signals (scoring + difficulty + announcement)
+ *  - behavior.distraction → increment violation counter; possibly escalate state
+ *  - state.transition     → cache `user:${userId}:current_state` in-memory
  */
 @Injectable()
 export class EventProcessor {
@@ -37,7 +37,8 @@ export class EventProcessor {
     private readonly rounds: Repository<RoundEntity>,
     private readonly eventsService: EventsService,
     private readonly snapshots: EventSnapshotService,
-    private readonly redis: RedisService,
+    private readonly bus: OperationalEventBus,
+    private readonly cacheService: CacheService,
   ) {}
 
   /** Process a single event by id. Safe to invoke concurrently for different ids. */
@@ -58,7 +59,6 @@ export class EventProcessor {
           error instanceof Error ? error.message : String(error)
         }`,
       );
-      // Re-throw so BullMQ can retry per its policy.
       throw error;
     }
 
@@ -73,13 +73,13 @@ export class EventProcessor {
   private async dispatch(event: EventEntity): Promise<void> {
     switch (event.eventType) {
       case OPERATIONAL_EVENTS.ROUND_COMPLETED:
-        await this.handleRoundCompleted(event);
+        this.handleRoundCompleted(event);
         return;
       case BEHAVIORAL_EVENTS.DISTRACTION_DETECTED:
         await this.handleDistraction(event);
         return;
       case OPERATIONAL_EVENTS.STATE_TRANSITION:
-        await this.handleStateTransition(event);
+        this.handleStateTransition(event);
         return;
       default:
         // No side-effect for other event types — they're purely audit.
@@ -87,26 +87,22 @@ export class EventProcessor {
     }
   }
 
-  private async handleRoundCompleted(event: EventEntity): Promise<void> {
-    // The scoring/difficulty/announcement modules each subscribe to round.completed
-    // via this dispatcher; we publish lightweight Redis hints so workers can pick
-    // up the work without tight coupling.
+  private handleRoundCompleted(event: EventEntity): void {
     if (!event.roundId) {
       return;
     }
-    await this.redis.publish('extraction:work:scoring', {
+    const base = {
       eventId: event.id,
       roundId: event.roundId,
       userId: event.userId,
-    });
-    await this.redis.publish('extraction:work:difficulty', {
+    };
+    this.bus.publishWork('scoring', base);
+    this.bus.publishWork('difficulty', {
       eventId: event.id,
       userId: event.userId,
     });
-    await this.redis.publish('extraction:work:announcements', {
-      eventId: event.id,
-      roundId: event.roundId,
-      userId: event.userId,
+    this.bus.publishWork('announcements', {
+      ...base,
       type: 'status_report',
     });
   }
@@ -139,9 +135,7 @@ export class EventProcessor {
       violations >= STATE_TRANSITION.CRITICAL_VIOLATIONS_THRESHOLD &&
       round.operationalState === 'OPERATIONAL'
     ) {
-      // Escalate — emit a downstream state.transition trigger so RoundsService
-      // can react. We avoid direct dependency by signaling via Redis.
-      await this.redis.publish('extraction:work:state-escalation', {
+      this.bus.publishWork('state-escalation', {
         roundId: round.id,
         userId: round.userId,
         trigger: 'round.violations_threshold',
@@ -149,12 +143,12 @@ export class EventProcessor {
     }
   }
 
-  private async handleStateTransition(event: EventEntity): Promise<void> {
+  private handleStateTransition(event: EventEntity): void {
     const data = event.eventData as { to?: string } | null;
     if (!data?.to) {
       return;
     }
-    await this.redis.set(
+    this.cacheService.set(
       `user:${event.userId}:current_state`,
       data.to,
       60 * 60 * 24, // 24h TTL

@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { TextGenerationService } from '../text-generation/text-generation.service';
 import { SYSTEM_PROMPT } from '../text-generation/prompt-templates';
+import { compactifyContext } from './compact-summary';
 import type { BehaviorEventDto } from './dto/analyze-behavior.dto';
 
 export interface BehaviorAnalysisResult {
@@ -189,21 +190,24 @@ export class AnalyzerService {
     userId: string,
     stats: Omit<BehaviorAnalysisResult, 'insights' | 'meta'>,
   ): Promise<string[]> {
-    const factSheet = JSON.stringify(stats, null, 2);
+    // Compactify before sending: drops unused fields, formats hour ranges.
+    const compact = compactifyContext(stats);
+    const factSheet = JSON.stringify(compact);
     const prompt = [
-      `Operator ID: ${userId}.`,
-      `Behavioral fact sheet (do not invent numbers — only reference these):`,
-      factSheet,
-      `Produce 2-4 short procedural observations as a JSON array of strings.`,
-      `Each observation must be a single declarative sentence under 25 words, factual, no advice.`,
-      `Output ONLY the JSON array, no prose.`,
+      `op=${userId}`,
+      `facts=${factSheet}`,
+      `Produce 2-4 procedural observations as a JSON array of strings.`,
+      `Each <25 words, declarative, factual, no advice. Output ONLY the JSON array.`,
     ].join('\n');
 
     const result = await this.text.generate(prompt, {
-      maxTokens: 320,
+      maxTokens: 260,
       temperature: 0.4,
       timeoutMs: 8000,
     });
+    this.logger.log(
+      `behavioral_analysis provider=${result.providerUsed} tokens_in=${result.tokensUsed.input} tokens_out=${result.tokensUsed.output}`,
+    );
     return this.parseInsightArray(result.text);
   }
 

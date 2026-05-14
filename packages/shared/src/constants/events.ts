@@ -77,8 +77,13 @@ export const SOCKET_SERVER_EVENTS = {
   STATE_TRANSITIONED: 'state:transitioned',
 } as const;
 
-/** Redis pub/sub channel names. */
-export const REDIS_CHANNELS = {
+/**
+ * Internal in-memory pub/sub channel names. Used by the backend's
+ * OperationalEventBus (Node EventEmitter). These names previously referenced
+ * Redis channels; they remain as logical channel identifiers after the
+ * Redis-to-EventEmitter migration.
+ */
+export const INTERNAL_CHANNELS = {
   EVENT_BROADCAST: 'extraction:events:broadcast',
   ANNOUNCEMENT_QUEUE: 'extraction:announcements:queue',
   TELEMETRY_INGESTED: 'extraction:telemetry:ingested',

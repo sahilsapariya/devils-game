@@ -4,109 +4,64 @@ import {
   OnApplicationBootstrap,
   OnApplicationShutdown,
 } from '@nestjs/common';
-import type { Redis } from 'ioredis';
 import {
   BEHAVIORAL_EVENTS,
   OPERATIONAL_EVENTS,
-  REDIS_CHANNELS,
   SOCKET_NAMESPACES,
   SOCKET_SERVER_EVENTS,
 } from '@extraction/shared';
 
-import { RedisService } from '../redis/redis.service';
+import {
+  OperationalEventBus,
+  type OperationalBroadcast,
+} from '../events/operational-event-bus.service';
 import { OperationalGateway } from './operational.gateway';
 
 /**
- * Subscribes to per-user Redis pub/sub broadcasts and fans them out
- * to the matching Socket.io rooms.
- *
- * The Redis subscription uses pattern subscribe (`PSUBSCRIBE`) because
- * channels are namespaced per user.
+ * Subscribes to the in-memory OperationalEventBus and fans events out to
+ * matching Socket.io rooms (`user:<userId>`). Previously this used Redis
+ * pattern subscribe — now it consumes the single-process EventEmitter.
  */
 @Injectable()
 export class EventBroadcasterService
   implements OnApplicationBootstrap, OnApplicationShutdown
 {
   private readonly logger = new Logger(EventBroadcasterService.name);
-  private readonly broadcastPattern = `${REDIS_CHANNELS.EVENT_BROADCAST}:*`;
+  private unsubscribe: (() => void) | null = null;
 
   constructor(
-    private readonly redis: RedisService,
+    private readonly bus: OperationalEventBus,
     private readonly gateway: OperationalGateway,
   ) {}
 
-  async onApplicationBootstrap(): Promise<void> {
-    const client = this.redis.getClient();
-    // We piggy-back on ioredis's psubscribe via the underlying client.
-    // We can't easily reuse the existing subscriber (it's not exposed for
-    // patterns) so we attach a pmessage listener on the dedicated subscriber.
-    // To stay within the abstractions we already have, we instead duplicate
-    // the client connection for pattern subscription.
-    const psub = client.duplicate();
-    psub.on('error', (err) => {
-      this.logger.error(`Pattern subscriber error: ${err.message}`);
+  onApplicationBootstrap(): void {
+    this.unsubscribe = this.bus.subscribeBroadcasts((broadcast) => {
+      this.handleBroadcast(broadcast);
     });
-    psub.on('pmessage', (_pattern, channel, message) => {
-      this.handleBroadcast(channel, message);
-    });
-    try {
-      await psub.psubscribe(this.broadcastPattern);
-      this.psubscriber = psub;
-      this.logger.log(`Subscribed to pattern ${this.broadcastPattern}`);
-    } catch (error) {
-      this.logger.error(
-        `Failed to psubscribe: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
+    this.logger.log('Subscribed to operational event broadcasts');
   }
 
-  async onApplicationShutdown(): Promise<void> {
-    if (this.psubscriber) {
-      try {
-        await this.psubscriber.punsubscribe(this.broadcastPattern);
-        await this.psubscriber.quit();
-      } catch (error) {
-        this.logger.warn(
-          `psubscriber teardown failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
+  onApplicationShutdown(): void {
+    this.unsubscribe?.();
+    this.unsubscribe = null;
   }
 
-  private psubscriber: Redis | null = null;
-
-  private handleBroadcast(channel: string, message: string): void {
-    const userId = channel.split(':').pop();
-    if (!userId) {
-      return;
-    }
-    let parsed: {
-      eventType: string;
-      eventData: Record<string, unknown>;
-      roundId: string | null;
-      id: string;
-    };
-    try {
-      parsed = JSON.parse(message);
-    } catch {
-      return;
-    }
-
+  private handleBroadcast(broadcast: OperationalBroadcast): void {
     const server = this.gateway.server;
     if (!server) {
       return;
     }
     const namespace = server.of(SOCKET_NAMESPACES.OPERATIONAL);
-    const room = `user:${userId}`;
-    const socketEvent = this.mapEventToSocketEvent(parsed.eventType);
+    const room = `user:${broadcast.userId}`;
+    const socketEvent = this.mapEventToSocketEvent(broadcast.eventType);
     if (!socketEvent) {
       return;
     }
     namespace.to(room).emit(socketEvent, {
-      id: parsed.id,
-      type: parsed.eventType,
-      roundId: parsed.roundId,
-      data: parsed.eventData,
+      id: broadcast.id,
+      type: broadcast.eventType,
+      roundId: broadcast.roundId,
+      data: broadcast.eventData,
     });
   }
 

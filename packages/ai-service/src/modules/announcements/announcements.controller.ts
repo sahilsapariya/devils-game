@@ -1,9 +1,9 @@
-import { Body, Controller, Logger, Post, UseGuards } from '@nestjs/common';
-import { LRUCache } from 'lru-cache';
+import { Body, Controller, Get, Logger, Post, UseGuards } from '@nestjs/common';
 import { InternalTokenGuard } from '../common/internal-token.guard';
 import { TextGenerationService } from '../text-generation/text-generation.service';
 import { TtsService } from '../tts/tts.service';
 import {
+  ANNOUNCEMENT_JSON_SCHEMA,
   AnnouncementContext,
   AnnouncementType,
   buildUserPrompt,
@@ -11,6 +11,9 @@ import {
 import { QualityGatesService } from './quality-gates.service';
 import { FallbackTemplatesService } from './fallback-templates.service';
 import { GenerateAnnouncementDto } from './dto/generate-announcement.dto';
+import { compactifyContext } from '../behavioral-analysis/compact-summary';
+import { pickPrefix, stripLeadingPrefix } from './static-prefixes';
+import { AnnouncementCacheService, CacheStats } from './announcement-cache.service';
 
 export interface AnnouncementResponse {
   message: string;
@@ -19,36 +22,43 @@ export interface AnnouncementResponse {
   fallbackUsed: boolean;
   providerUsed: string | null;
   qualityReason?: string;
+  [key: string]: unknown;
 }
 
 @UseGuards(InternalTokenGuard)
 @Controller('internal')
 export class AnnouncementsController {
   private readonly logger = new Logger(AnnouncementsController.name);
-  // LRU: 100 entries, 1h TTL — keyed on (type + canonical context)
-  private readonly cache = new LRUCache<string, AnnouncementResponse>({
-    max: 100,
-    ttl: 60 * 60 * 1000,
-  });
 
   constructor(
     private readonly text: TextGenerationService,
     private readonly tts: TtsService,
     private readonly gates: QualityGatesService,
     private readonly fallback: FallbackTemplatesService,
+    private readonly cache: AnnouncementCacheService,
   ) {}
+
+  @Get('cache/stats')
+  cacheStats(): CacheStats {
+    return this.cache.stats();
+  }
 
   @Post('generate-announcement')
   async generate(@Body() body: GenerateAnnouncementDto): Promise<AnnouncementResponse> {
-    const cacheKey = this.cacheKey(body);
-    const cached = this.cache.get(cacheKey);
-    if (cached) return cached;
-
     const type = body.type as AnnouncementType;
     const context: AnnouncementContext = {
       ...body.context,
       toneGuidance: body.toneGuidance,
     };
+
+    // Compact context for cache keying AND for the AI prompt
+    const compact = compactifyContext(context);
+    const cacheKey = this.cache.buildKey(type, { ...compact, tone: body.toneGuidance ?? null });
+    const cached = this.cache.get<AnnouncementResponse>(cacheKey);
+    if (cached) return cached;
+
+    // Static prefix reuse: AI generates only the tail
+    const prefix = pickPrefix(type, cacheKey);
 
     let message: string;
     let fallbackUsed = false;
@@ -56,22 +66,34 @@ export class AnnouncementsController {
     let qualityReason: string | undefined;
 
     try {
-      const prompt = buildUserPrompt(type, context);
+      const compactCtx: AnnouncementContext = { ...compact, toneGuidance: body.toneGuidance };
+      const basePrompt = buildUserPrompt(type, compactCtx);
+      const prompt = prefix
+        ? `${basePrompt}\nThe response will be prefixed server-side with "${prefix}". Generate ONLY the content that follows the prefix.`
+        : basePrompt;
+
       const gen = await this.text.generate(prompt, {
         temperature: 0.65,
-        maxTokens: 220,
+        maxTokens: 160,
         timeoutMs: 8000,
+        jsonSchema: ANNOUNCEMENT_JSON_SCHEMA,
       });
-      const cleaned = this.cleanOutput(gen.text);
-      const gate = this.gates.check(cleaned);
+
+      const tail = stripLeadingPrefix(this.cleanOutput(gen.text), prefix);
+      const composed = prefix ? `${prefix} ${tail}`.trim() : tail;
+
+      const gate = this.gates.check(composed);
       if (!gate.passed) {
         qualityReason = gate.reason;
         this.logger.warn(`Quality gate failed (${gate.reason}). Using template fallback.`);
         message = this.fallback.build(type, context);
         fallbackUsed = true;
       } else {
-        message = cleaned;
+        message = composed;
         providerUsed = gen.providerUsed;
+        this.logger.log(
+          `announcement type=${type} provider=${gen.providerUsed} tokens_in=${gen.tokensUsed.input} tokens_out=${gen.tokensUsed.output}`,
+        );
       }
     } catch (err) {
       this.logger.warn(`AI generation failed: ${(err as Error).message}. Using template.`);
@@ -101,7 +123,7 @@ export class AnnouncementsController {
       providerUsed,
       qualityReason,
     };
-    this.cache.set(cacheKey, response);
+    this.cache.set(cacheKey, response, type);
     return response;
   }
 
@@ -112,9 +134,5 @@ export class AnnouncementsController {
       t = t.slice(1, -1).trim();
     }
     return t;
-  }
-
-  private cacheKey(body: GenerateAnnouncementDto): string {
-    return JSON.stringify({ t: body.type, c: body.context, g: body.toneGuidance ?? null });
   }
 }

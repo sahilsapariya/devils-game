@@ -1,10 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { REDIS_CHANNELS } from '@extraction/shared';
 
 import { EventEntity } from '../../database/entities/event.entity';
-import { RedisService } from '../redis/redis.service';
+import { OperationalEventBus } from './operational-event-bus.service';
 
 export interface EmitEventInput {
   userId: string;
@@ -22,9 +21,6 @@ export interface ListEventsOptions {
   offset?: number;
 }
 
-const REDIS_STREAM = 'extraction:events:stream';
-const REDIS_STREAM_MAXLEN = 100_000; // approx cap
-
 @Injectable()
 export class EventsService {
   private readonly logger = new Logger(EventsService.name);
@@ -32,12 +28,15 @@ export class EventsService {
   constructor(
     @InjectRepository(EventEntity)
     private readonly events: Repository<EventEntity>,
-    private readonly redis: RedisService,
+    private readonly bus: OperationalEventBus,
   ) {}
 
   /**
-   * Persist an operational event, push to Redis Stream, broadcast to user.
-   * Returns the persisted entity (with id).
+   * Persist an operational event and broadcast to subscribers via the
+   * in-memory OperationalEventBus. Returns the persisted entity (with id).
+   *
+   * Replay history is preserved by the `events` table itself; with Redis gone
+   * we no longer push to Redis Streams — SQLite holds the canonical log.
    */
   async emit(input: EmitEventInput): Promise<EventEntity> {
     const entity = this.events.create({
@@ -51,21 +50,22 @@ export class EventsService {
     });
     const saved = await this.events.save(entity);
 
-    // Best-effort Redis fan-out — never block the caller on Redis failures.
-    void this.pushToStream(saved).catch((error) => {
-      this.logger.warn(
-        `Failed to push event ${saved.id} to Redis stream: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    });
-    void this.broadcast(saved).catch((error) => {
+    try {
+      this.bus.publishBroadcast({
+        id: saved.id,
+        userId: saved.userId,
+        roundId: saved.roundId,
+        eventType: saved.eventType,
+        eventData: saved.eventData,
+        occurredAt: saved.occurredAt.toISOString(),
+      });
+    } catch (error) {
       this.logger.warn(
         `Failed to broadcast event ${saved.id}: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
-    });
+    }
 
     return saved;
   }
@@ -151,45 +151,5 @@ export class EventsService {
       }
     }
     return qb.getMany();
-  }
-
-  // ---------------------------------------------------------------------------
-  // Redis fan-out
-  // ---------------------------------------------------------------------------
-
-  private async pushToStream(event: EventEntity): Promise<void> {
-    const client = this.redis.getClient();
-    const payload = JSON.stringify({
-      id: event.id,
-      userId: event.userId,
-      roundId: event.roundId,
-      eventType: event.eventType,
-      eventData: event.eventData,
-      occurredAt: event.occurredAt.toISOString(),
-    });
-    // XADD <stream> MAXLEN ~ <max> * eventId <payload>
-    await client.xadd(
-      REDIS_STREAM,
-      'MAXLEN',
-      '~',
-      String(REDIS_STREAM_MAXLEN),
-      '*',
-      'eventId',
-      event.id,
-      'payload',
-      payload,
-    );
-  }
-
-  private async broadcast(event: EventEntity): Promise<void> {
-    const channel = `${REDIS_CHANNELS.EVENT_BROADCAST}:${event.userId}`;
-    await this.redis.publish(channel, {
-      id: event.id,
-      userId: event.userId,
-      roundId: event.roundId,
-      eventType: event.eventType,
-      eventData: event.eventData,
-      occurredAt: event.occurredAt.toISOString(),
-    });
   }
 }

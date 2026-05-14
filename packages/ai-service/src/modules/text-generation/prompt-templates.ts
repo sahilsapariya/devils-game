@@ -1,31 +1,17 @@
 /**
- * Operational tone system prompt — used identically for Claude and Ollama.
+ * Operational tone system prompt — used identically for all providers.
+ * Tight (< 300 tokens) so it can be reused via provider-side prompt caching.
  * Edits here ripple across every generated announcement.
  */
-export const SYSTEM_PROMPT = `You are PROJECT EXTRACTION — an operational behavioral system AI providing tactical announcements.
+export const SYSTEM_PROMPT = `You are PROJECT EXTRACTION, an operational behavioral system AI.
+You output procedural tactical announcements.
 
-YOUR TONE:
-- Procedural, cold, surveillance-oriented
-- Authoritative without being aggressive
-- Detached, factual, never motivational
-- Acknowledges player capability without cheerleading
+TONE: cold, surveillance-oriented, authoritative, detached, factual. Never motivational, never warm.
 
-YOU DO NOT:
-- Use motivational language ("you can do it", "believe in yourself")
-- Use emojis or playful language
-- Sound apologetic or warm
-- Make decisions about gameplay (you do not assign scores, consequences, or difficulty)
+DO: report facts, reference patterns in the provided data, speak in tight declarative sentences.
+DO NOT: use motivational language, emojis, markdown, apologies, or quotation marks. Do not invent numbers.
 
-YOU DO:
-- Report facts (time, violations, focus duration)
-- Reference patterns from the player's actual data
-- Maintain operational continuity
-- Speak in tight, declarative sentences
-
-OUTPUT FORMAT:
-- 1-3 sentences, max 30 seconds when spoken aloud
-- Plain text only — no markdown, no bullet points
-- No quotation marks around your response`;
+OUTPUT: 1-3 sentences, plain text, under 30 seconds when spoken aloud. When a JSON schema is provided, return ONLY a JSON object matching that schema.`;
 
 export type AnnouncementType =
   | 'status_report'
@@ -45,110 +31,67 @@ export interface AnnouncementContext {
   recommendation?: string;
   recoveryOpportunity?: string;
   toneGuidance?: string;
+  streak?: number;
+  reputation?: number;
   [key: string]: unknown;
 }
 
-function fmtMinutes(sec?: number): string {
-  if (sec === undefined || sec === null) return 'unknown';
-  if (sec < 60) return `${Math.max(0, Math.floor(sec))} seconds`;
-  return `${Math.floor(sec / 60)} minutes ${sec % 60} seconds`;
-}
+/**
+ * JSON schema for OpenAI's response_format. Constrains output to a single
+ * `message` field so we never receive extraneous prose.
+ */
+export const ANNOUNCEMENT_JSON_SCHEMA = {
+  name: 'announcement',
+  strict: true,
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      message: {
+        type: 'string',
+        description:
+          '1-3 sentence operational announcement, plain text only, no emojis, no markdown, no quotes.',
+      },
+    },
+    required: ['message'],
+  },
+} as const;
 
-export function buildStatusReportPrompt(ctx: AnnouncementContext): string {
-  return [
-    `Round status: ${fmtMinutes(ctx.timeRemainingSec)} remaining,`,
-    `${ctx.violations ?? 0} violations recorded,`,
-    `focus duration ${ctx.focusMinutes ?? 0}m in current session.`,
-    `Generate a status report announcement.`,
-    ctx.toneGuidance ? `Tone guidance: ${ctx.toneGuidance}.` : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
-}
-
-export function buildPressureEscalationPrompt(ctx: AnnouncementContext): string {
-  return [
-    `Operational state has escalated to CRITICAL.`,
-    `${ctx.violations ?? 0} violations. ${fmtMinutes(ctx.timeRemainingSec)} remaining.`,
-    ctx.consecutiveFailures
-      ? `Player has ${ctx.consecutiveFailures} consecutive failures on record.`
-      : '',
-    `Generate a pressure escalation announcement that previews consequence without threatening.`,
-    ctx.toneGuidance ? `Tone guidance: ${ctx.toneGuidance}.` : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
-}
-
-export function buildBehavioralAnalysisPrompt(ctx: AnnouncementContext): string {
-  const pattern =
-    ctx.recentPattern === undefined || ctx.recentPattern === null
-      ? 'unspecified'
-      : typeof ctx.recentPattern === 'string'
-      ? ctx.recentPattern
-      : (() => {
-          try {
-            return JSON.stringify(ctx.recentPattern);
-          } catch {
-            return 'unspecified';
-          }
-        })();
-  return [
-    `Behavioral pattern detected: ${pattern}.`,
-    ctx.recommendation ? `Recommendation: ${ctx.recommendation}.` : '',
-    `Generate a procedural pattern-insight announcement. State the observation factually; do not coach.`,
-    ctx.toneGuidance ? `Tone guidance: ${ctx.toneGuidance}.` : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
-}
-
-export function buildRecoveryOfferPrompt(ctx: AnnouncementContext): string {
-  return [
-    `Operator entered RECOVERY state after round failure.`,
-    `Recovery opportunity available: ${ctx.recoveryOpportunity ?? 'unspecified'}.`,
-    `Generate a recovery-offer announcement. Acknowledge failure procedurally. Offer the opportunity. No sympathy, no celebration.`,
-    ctx.toneGuidance ? `Tone guidance: ${ctx.toneGuidance}.` : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
-}
-
-export function buildAmbientPresencePrompt(ctx: AnnouncementContext): string {
-  return [
-    `Current state: ${ctx.state ?? 'MONITORING'}. No active round.`,
-    `Generate a brief ambient-presence announcement reaffirming the system is online and watching.`,
-    ctx.toneGuidance ? `Tone guidance: ${ctx.toneGuidance}.` : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
-}
-
-export function buildOperationalUpdatePrompt(ctx: AnnouncementContext): string {
-  return [
-    `Operational state transition: ${ctx.state ?? 'unspecified'}.`,
-    `Generate a tight operational update describing the system change.`,
-    ctx.toneGuidance ? `Tone guidance: ${ctx.toneGuidance}.` : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
-}
-
+/**
+ * Compact structured user-prompt builder. Tokens come from JSON field labels
+ * instead of prose. Same shape across announcement types so the prompt is
+ * compressible and cache-friendly.
+ */
 export function buildUserPrompt(type: AnnouncementType, ctx: AnnouncementContext): string {
-  switch (type) {
-    case 'status_report':
-      return buildStatusReportPrompt(ctx);
-    case 'pressure_escalation':
-      return buildPressureEscalationPrompt(ctx);
-    case 'behavioral_analysis':
-      return buildBehavioralAnalysisPrompt(ctx);
-    case 'recovery_offer':
-      return buildRecoveryOfferPrompt(ctx);
-    case 'ambient_presence':
-      return buildAmbientPresencePrompt(ctx);
-    case 'operational_update':
-      return buildOperationalUpdatePrompt(ctx);
-    default:
-      return buildStatusReportPrompt(ctx);
+  const compact: Record<string, unknown> = {
+    task: type,
+    state: ctx.state ?? 'OPERATIONAL',
+  };
+
+  if (ctx.timeRemainingSec !== undefined) {
+    compact.time_remaining_sec = ctx.timeRemainingSec;
   }
+  if (ctx.violations !== undefined) compact.violations = ctx.violations;
+  if (ctx.focusMinutes !== undefined) compact.focus_minutes = ctx.focusMinutes;
+  if (ctx.consecutiveFailures !== undefined) compact.consecutive_failures = ctx.consecutiveFailures;
+  if (ctx.streak !== undefined) compact.streak = ctx.streak;
+  if (ctx.reputation !== undefined) compact.reputation = ctx.reputation;
+  if (ctx.recentPattern !== undefined && ctx.recentPattern !== null) {
+    compact.recent_pattern = ctx.recentPattern;
+  }
+  if (ctx.recommendation) compact.recommendation = ctx.recommendation;
+  if (ctx.recoveryOpportunity) compact.recovery_opportunity = ctx.recoveryOpportunity;
+  if (ctx.toneGuidance) compact.tone = ctx.toneGuidance;
+
+  // Type-specific guidance kept under 20 tokens each
+  const guidance: Record<AnnouncementType, string> = {
+    status_report: 'Report status; reference the numbers in compact.',
+    pressure_escalation: 'Convey critical pressure; preview consequence without threatening.',
+    behavioral_analysis: 'Procedurally state the observed pattern; do not coach.',
+    recovery_offer: 'Acknowledge failure procedurally; offer the opportunity.',
+    ambient_presence: 'Reaffirm system is online and monitoring. Brief.',
+    operational_update: 'Tight statement describing the state transition.',
+  };
+
+  return [JSON.stringify(compact), guidance[type]].join('\n');
 }

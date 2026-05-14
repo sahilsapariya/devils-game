@@ -1,9 +1,11 @@
+import { randomUUID } from 'crypto';
 import {
+  BeforeInsert,
   Column,
   CreateDateColumn,
   Entity,
   Index,
-  PrimaryGeneratedColumn,
+  PrimaryColumn,
 } from 'typeorm';
 
 export type OperationalLogLevel = 'info' | 'warning' | 'critical';
@@ -13,8 +15,15 @@ export type OperationalLogLevel = 'info' | 'warning' | 'critical';
 @Index('idx_oplogs_round', ['roundId'])
 @Index('idx_oplogs_level', ['level'])
 export class OperationalLogEntity {
-  @PrimaryGeneratedColumn('uuid')
+  @PrimaryColumn('uuid')
   id!: string;
+
+  @BeforeInsert()
+  generateId(): void {
+    if (!this.id) {
+      this.id = randomUUID();
+    }
+  }
 
   @Column({ type: 'uuid', name: 'user_id' })
   userId!: string;
@@ -28,9 +37,9 @@ export class OperationalLogEntity {
   @Column({ type: 'text' })
   message!: string;
 
-  @Column({ type: 'jsonb', default: () => "'{}'::jsonb" })
+  @Column({ type: 'simple-json', default: () => "'{}'" })
   context!: Record<string, unknown>;
 
-  @CreateDateColumn({ type: 'timestamptz', name: 'created_at' })
+  @CreateDateColumn({ name: 'created_at' })
   createdAt!: Date;
 }

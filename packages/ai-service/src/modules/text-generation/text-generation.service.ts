@@ -3,27 +3,38 @@ import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
 import axios from 'axios';
 import { SYSTEM_PROMPT } from './prompt-templates';
+import { OpenAIClient } from './openai.client';
 
-export type Provider = 'claude' | 'ollama';
+export type Provider = 'openai' | 'claude' | 'ollama';
 
 export interface GenerateOptions {
   maxTokens?: number;
   temperature?: number;
-  /** preferred provider; falls back to the other on failure */
+  /** preferred provider; falls back through the chain on failure */
   prefer?: Provider;
   timeoutMs?: number;
+  /** If set, providers that support structured output will constrain to this schema. */
+  jsonSchema?: {
+    name: string;
+    schema: Record<string, unknown>;
+    strict?: boolean;
+  };
 }
 
 export interface GenerateResult {
   text: string;
   providerUsed: Provider;
   latencyMs: number;
+  tokensUsed: { input: number; output: number };
 }
+
+const PROVIDER_CHAIN: Provider[] = ['openai', 'claude', 'ollama'];
 
 @Injectable()
 export class TextGenerationService {
   private readonly logger = new Logger(TextGenerationService.name);
   private anthropic: Anthropic | null = null;
+  private openaiClient: OpenAIClient | null = null;
 
   constructor(private readonly config: ConfigService) {}
 
@@ -35,20 +46,59 @@ export class TextGenerationService {
     return this.anthropic;
   }
 
+  private getOpenAI(): OpenAIClient | null {
+    if (this.openaiClient) return this.openaiClient;
+    const key = this.config.get<string>('OPENAI_API_KEY');
+    if (!key) return null;
+    const model = this.config.get<string>('OPENAI_MODEL') ?? 'gpt-5.4-nano';
+    this.openaiClient = new OpenAIClient({ apiKey: key, model });
+    return this.openaiClient;
+  }
+
+  /**
+   * Build a fallback chain: configured primary -> openai -> claude -> ollama
+   * (deduplicated, primary first).
+   */
+  private buildChain(primary: Provider): Provider[] {
+    const seen = new Set<Provider>();
+    const chain: Provider[] = [];
+    for (const p of [primary, ...PROVIDER_CHAIN]) {
+      if (!seen.has(p)) {
+        seen.add(p);
+        chain.push(p);
+      }
+    }
+    return chain;
+  }
+
   async generate(userPrompt: string, options: GenerateOptions = {}): Promise<GenerateResult> {
-    const defaultPref = (this.config.get<string>('USE_PROVIDER') as Provider) ?? 'claude';
+    // Support both new AI_PROVIDER and legacy USE_PROVIDER for back-compat
+    const envProvider =
+      (this.config.get<string>('AI_PROVIDER') as Provider | undefined) ??
+      (this.config.get<string>('USE_PROVIDER') as Provider | undefined);
+    const defaultPref: Provider = envProvider ?? 'openai';
     const primary: Provider = options.prefer ?? defaultPref;
-    const secondary: Provider = primary === 'claude' ? 'ollama' : 'claude';
     const timeoutMs = options.timeoutMs ?? 8000;
 
-    try {
-      return await this.callProvider(primary, userPrompt, options, timeoutMs);
-    } catch (err) {
-      this.logger.warn(
-        `Primary provider '${primary}' failed: ${(err as Error).message}. Falling back to '${secondary}'.`,
-      );
-      return this.callProvider(secondary, userPrompt, options, timeoutMs);
+    const chain = this.buildChain(primary);
+    let lastErr: unknown;
+    for (const provider of chain) {
+      try {
+        const result = await this.callProvider(provider, userPrompt, options, timeoutMs);
+        this.logger.log(
+          `gen ok provider=${provider} input_tokens=${result.tokensUsed.input} output_tokens=${result.tokensUsed.output} latency_ms=${result.latencyMs}`,
+        );
+        return result;
+      } catch (err) {
+        lastErr = err;
+        this.logger.warn(
+          `Provider '${provider}' failed: ${(err as Error).message}. Trying next in chain.`,
+        );
+      }
     }
+    throw lastErr instanceof Error
+      ? lastErr
+      : new Error('All providers failed and no underlying error captured');
   }
 
   private async callProvider(
@@ -58,32 +108,69 @@ export class TextGenerationService {
     timeoutMs: number,
   ): Promise<GenerateResult> {
     const start = Date.now();
+    if (provider === 'openai') {
+      const client = this.getOpenAI();
+      if (!client) throw new Error('OpenAI provider unconfigured (OPENAI_API_KEY missing)');
+      const r = await client.generate({
+        systemPrompt: SYSTEM_PROMPT,
+        userPrompt,
+        maxTokens: options.maxTokens ?? 200,
+        temperature: options.temperature ?? 0.65,
+        jsonSchema: options.jsonSchema,
+        timeoutMs,
+      });
+      return {
+        text: r.text,
+        providerUsed: 'openai',
+        latencyMs: r.latencyMs,
+        tokensUsed: r.tokensUsed,
+      };
+    }
     if (provider === 'claude') {
-      const text = await this.callClaude(userPrompt, options, timeoutMs);
-      return { text, providerUsed: 'claude', latencyMs: Date.now() - start };
+      const { text, tokensUsed } = await this.callClaude(userPrompt, options, timeoutMs);
+      return { text, providerUsed: 'claude', latencyMs: Date.now() - start, tokensUsed };
     }
     const text = await this.callOllama(userPrompt, options, timeoutMs);
-    return { text, providerUsed: 'ollama', latencyMs: Date.now() - start };
+    return {
+      text,
+      providerUsed: 'ollama',
+      latencyMs: Date.now() - start,
+      // ollama doesn't return tokens; approximate from text length
+      tokensUsed: { input: Math.ceil(userPrompt.length / 4), output: Math.ceil(text.length / 4) },
+    };
   }
 
   private async callClaude(
     userPrompt: string,
     options: GenerateOptions,
     timeoutMs: number,
-  ): Promise<string> {
+  ): Promise<{ text: string; tokensUsed: { input: number; output: number } }> {
     const client = this.getAnthropic();
     if (!client) throw new Error('Claude provider unconfigured (ANTHROPIC_API_KEY missing)');
     const model =
       this.config.get<string>('ANTHROPIC_MODEL') ?? 'claude-haiku-4-5-20251001';
+
+    // If JSON schema was requested, instruct the model to emit JSON matching it.
+    // Claude doesn't have native json_schema response_format but JSON-only mode
+    // is achieved via explicit instructions.
+    let finalUserPrompt = userPrompt;
+    if (options.jsonSchema) {
+      finalUserPrompt = [
+        userPrompt,
+        '',
+        `Respond with ONLY a single JSON object matching this schema (no markdown, no prose):`,
+        JSON.stringify(options.jsonSchema.schema),
+      ].join('\n');
+    }
 
     const response = await this.withRetry(async () => {
       return client.messages.create(
         {
           model,
           max_tokens: options.maxTokens ?? 200,
-          temperature: options.temperature ?? 0.7,
+          temperature: options.temperature ?? 0.65,
           system: SYSTEM_PROMPT,
-          messages: [{ role: 'user', content: userPrompt }],
+          messages: [{ role: 'user', content: finalUserPrompt }],
         },
         { timeout: timeoutMs },
       );
@@ -95,9 +182,27 @@ export class TextGenerationService {
         parts.push((block as { text: string }).text);
       }
     }
-    const text = parts.join('').trim();
+    let text = parts.join('').trim();
     if (!text) throw new Error('Claude returned empty response');
-    return text;
+
+    // If JSON schema was requested, try to extract "message" field
+    if (options.jsonSchema) {
+      const stripped = text.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+      try {
+        const parsed = JSON.parse(stripped) as Record<string, unknown>;
+        if (typeof parsed.message === 'string') {
+          text = parsed.message.trim();
+        }
+      } catch {
+        // Leave text as-is if parsing fails; quality gates will catch obvious failure
+      }
+    }
+
+    const tokensUsed = {
+      input: response.usage?.input_tokens ?? 0,
+      output: response.usage?.output_tokens ?? 0,
+    };
+    return { text, tokensUsed };
   }
 
   private async callOllama(
@@ -116,7 +221,7 @@ export class TextGenerationService {
           prompt: userPrompt,
           stream: false,
           options: {
-            temperature: options.temperature ?? 0.7,
+            temperature: options.temperature ?? 0.65,
             num_predict: options.maxTokens ?? 200,
           },
         },

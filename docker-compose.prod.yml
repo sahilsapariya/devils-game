@@ -1,0 +1,92 @@
+# PROJECT EXTRACTION — production docker compose stack
+#
+# Three containers on one VPS, reachable only via Caddy on :80/:443.
+# Application data lives in ./data (bind mount) so backups are a simple `tar`.
+# Caddy's certs and runtime state live in named volumes (managed by Docker).
+#
+# Prerequisites:
+#   * `.env.production` exists at the repo root (see `.env.production.example`)
+#   * `Caddyfile` exists at the repo root (see `Caddyfile.example`)
+#   * `./data/` directory exists with subdirs: `voice-cache/`, `logs/`, `backups/`
+#
+# Bring up:   docker compose -f docker-compose.prod.yml up -d --build
+# Inspect:    docker compose -f docker-compose.prod.yml ps
+# Tail logs:  docker compose -f docker-compose.prod.yml logs -f
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: extraction-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"  # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - ./data/logs/caddy:/var/log/caddy
+    depends_on:
+      - backend
+      - ai-service
+    networks:
+      - extraction
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  backend:
+    image: extraction-backend:latest
+    container_name: extraction-backend
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    volumes:
+      - ./data:/app/data
+    expose:
+      - "3001"
+    networks:
+      - extraction
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  ai-service:
+    image: extraction-ai-service:latest
+    container_name: extraction-ai-service
+    build:
+      context: .
+      dockerfile: packages/ai-service/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    volumes:
+      - ./data/voice-cache:/app/voice-cache
+    expose:
+      - "4001"
+    networks:
+      - extraction
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:4001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+networks:
+  extraction:
+    name: extraction
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:

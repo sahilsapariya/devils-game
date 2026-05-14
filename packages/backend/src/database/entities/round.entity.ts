@@ -1,11 +1,13 @@
+import { randomUUID } from 'crypto';
 import {
+  BeforeInsert,
   Column,
   CreateDateColumn,
   Entity,
   Index,
   JoinColumn,
   ManyToOne,
-  PrimaryGeneratedColumn,
+  PrimaryColumn,
   UpdateDateColumn,
 } from 'typeorm';
 import type {
@@ -23,8 +25,15 @@ import { MissionEntity } from './mission.entity';
 @Index('idx_rounds_scheduled_start', ['scheduledStart'])
 @Index('idx_rounds_operational_state', ['operationalState'])
 export class RoundEntity {
-  @PrimaryGeneratedColumn('uuid')
+  @PrimaryColumn('uuid')
   id!: string;
+
+  @BeforeInsert()
+  generateId(): void {
+    if (!this.id) {
+      this.id = randomUUID();
+    }
+  }
 
   @Column({ type: 'uuid', name: 'user_id' })
   userId!: string;
@@ -43,25 +52,25 @@ export class RoundEntity {
   })
   operationalState!: OperationalState;
 
-  @Column({ type: 'jsonb', default: () => "'{}'::jsonb" })
+  @Column({ type: 'simple-json', default: () => "'{}'" })
   difficulty!: RoundDifficulty;
 
-  @Column({ type: 'timestamptz', name: 'scheduled_start' })
+  @Column({ type: 'datetime', name: 'scheduled_start' })
   scheduledStart!: Date;
 
-  @Column({ type: 'timestamptz', name: 'scheduled_end' })
+  @Column({ type: 'datetime', name: 'scheduled_end' })
   scheduledEnd!: Date;
 
-  @Column({ type: 'timestamptz', nullable: true, name: 'actual_start' })
+  @Column({ type: 'datetime', nullable: true, name: 'actual_start' })
   actualStart!: Date | null;
 
-  @Column({ type: 'timestamptz', nullable: true, name: 'actual_end' })
+  @Column({ type: 'datetime', nullable: true, name: 'actual_end' })
   actualEnd!: Date | null;
 
   @Column({ type: 'integer', name: 'duration_minutes' })
   durationMinutes!: number;
 
-  @Column({ type: 'jsonb', default: () => "'{}'::jsonb" })
+  @Column({ type: 'simple-json', default: () => "'{}'" })
   stats!: RoundStats;
 
   @Column({ type: 'integer', default: 0, name: 'points_earned' })
@@ -70,10 +79,10 @@ export class RoundEntity {
   @Column({ type: 'text', nullable: true, name: 'failure_reason' })
   failureReason!: string | null;
 
-  @CreateDateColumn({ type: 'timestamptz', name: 'created_at' })
+  @CreateDateColumn({ name: 'created_at' })
   createdAt!: Date;
 
-  @UpdateDateColumn({ type: 'timestamptz', name: 'updated_at' })
+  @UpdateDateColumn({ name: 'updated_at' })
   updatedAt!: Date;
 
   @ManyToOne(() => UserEntity, (user) => user.rounds, { onDelete: 'CASCADE' })

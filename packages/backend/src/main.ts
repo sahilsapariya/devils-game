@@ -37,7 +37,7 @@ async function bootstrap(): Promise<void> {
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
   });
 
-  // Socket.io adapter (Redis adapter can be wired later for multi-server scaling).
+  // Single-process Socket.io adapter — sufficient for the single-node backend.
   app.useWebSocketAdapter(new IoAdapter(app));
 
   app.enableShutdownHooks();

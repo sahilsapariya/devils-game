@@ -1,9 +1,11 @@
+import { randomUUID } from 'crypto';
 import {
+  BeforeInsert,
   Column,
   CreateDateColumn,
   Entity,
   Index,
-  PrimaryGeneratedColumn,
+  PrimaryColumn,
 } from 'typeorm';
 import type {
   AnnouncementCategory,
@@ -15,8 +17,15 @@ import type {
 @Index('idx_announcements_round', ['roundId'])
 @Index('idx_announcements_undelivered', ['userId', 'deliveredAt'])
 export class AnnouncementEntity {
-  @PrimaryGeneratedColumn('uuid')
+  @PrimaryColumn('uuid')
   id!: string;
+
+  @BeforeInsert()
+  generateId(): void {
+    if (!this.id) {
+      this.id = randomUUID();
+    }
+  }
 
   @Column({ type: 'uuid', name: 'user_id' })
   userId!: string;
@@ -51,18 +60,18 @@ export class AnnouncementEntity {
   @Column({ type: 'boolean', default: false, name: 'quality_gate_passed' })
   qualityGatePassed!: boolean;
 
-  @Column({ type: 'jsonb', default: () => "'{}'::jsonb" })
+  @Column({ type: 'simple-json', default: () => "'{}'" })
   metadata!: Record<string, unknown>;
 
-  @Column({ type: 'timestamptz', name: 'scheduled_for' })
+  @Column({ type: 'datetime', name: 'scheduled_for' })
   scheduledFor!: Date;
 
-  @Column({ type: 'timestamptz', nullable: true, name: 'delivered_at' })
+  @Column({ type: 'datetime', nullable: true, name: 'delivered_at' })
   deliveredAt!: Date | null;
 
-  @Column({ type: 'timestamptz', nullable: true, name: 'acknowledged_at' })
+  @Column({ type: 'datetime', nullable: true, name: 'acknowledged_at' })
   acknowledgedAt!: Date | null;
 
-  @CreateDateColumn({ type: 'timestamptz', name: 'created_at' })
+  @CreateDateColumn({ name: 'created_at' })
   createdAt!: Date;
 }

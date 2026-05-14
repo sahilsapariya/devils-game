@@ -2,11 +2,12 @@ import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 
-import { RedisService } from '../redis/redis.service';
+import { CacheService } from '../cache/cache.service';
 
 interface ComponentStatus {
   status: 'ok' | 'error';
   message?: string;
+  size?: number;
 }
 
 interface HealthResponse {
@@ -14,7 +15,8 @@ interface HealthResponse {
   timestamp: string;
   components: {
     database: ComponentStatus;
-    redis: ComponentStatus;
+    cache: ComponentStatus;
+    eventBus: ComponentStatus;
   };
 }
 
@@ -22,23 +24,25 @@ interface HealthResponse {
 export class HealthController {
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
-    private readonly redis: RedisService,
+    private readonly cacheService: CacheService,
   ) {}
 
   @Get()
   async check(): Promise<HealthResponse> {
-    const [database, redis] = await Promise.all([
-      this.checkDatabase(),
-      this.checkRedis(),
-    ]);
+    const database = await this.checkDatabase();
+    const cache: ComponentStatus = {
+      status: 'ok',
+      size: this.cacheService.size(),
+    };
+    const eventBus: ComponentStatus = { status: 'ok' };
 
     const overall: HealthResponse['status'] =
-      database.status === 'ok' && redis.status === 'ok' ? 'ok' : 'degraded';
+      database.status === 'ok' ? 'ok' : 'degraded';
 
     const response: HealthResponse = {
       status: overall,
       timestamp: new Date().toISOString(),
-      components: { database, redis },
+      components: { database, cache, eventBus },
     };
 
     if (overall !== 'ok') {
@@ -51,20 +55,6 @@ export class HealthController {
     try {
       await this.dataSource.query('SELECT 1');
       return { status: 'ok' };
-    } catch (error) {
-      return {
-        status: 'error',
-        message: error instanceof Error ? error.message : String(error),
-      };
-    }
-  }
-
-  private async checkRedis(): Promise<ComponentStatus> {
-    try {
-      const ok = await this.redis.ping();
-      return ok
-        ? { status: 'ok' }
-        : { status: 'error', message: 'Unexpected ping response' };
     } catch (error) {
       return {
         status: 'error',

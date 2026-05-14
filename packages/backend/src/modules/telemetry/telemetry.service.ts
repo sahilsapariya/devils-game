@@ -4,13 +4,13 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import {
   BEHAVIORAL_EVENTS,
-  REDIS_CHANNELS,
+  INTERNAL_CHANNELS,
   type TelemetryEventType,
 } from '@extraction/shared';
 
 import { TelemetryEventEntity } from '../../database/entities/telemetry-event.entity';
 import { EventsService } from '../events/events.service';
-import { RedisService } from '../redis/redis.service';
+import { OperationalEventBus } from '../events/operational-event-bus.service';
 import type { TelemetryBatchDto } from './dto/telemetry-batch.dto';
 
 const PRODUCTIVE_TYPES: ReadonlyArray<TelemetryEventType> = [
@@ -53,10 +53,10 @@ export class TelemetryService {
   private readonly hmacEnabled: boolean;
 
   constructor(
-    @InjectRepository(TelemetryEventEntity)
+    @InjectRepository(TelemetryEventEntity, 'telemetry')
     private readonly telemetry: Repository<TelemetryEventEntity>,
     private readonly events: EventsService,
-    private readonly redis: RedisService,
+    private readonly bus: OperationalEventBus,
     private readonly config: ConfigService,
   ) {
     this.hmacEnabled =
@@ -161,13 +161,21 @@ export class TelemetryService {
     // Deduplicate by (deviceId + occurredAt + eventType). We can only enforce
     // this with an existing-rows lookup; if rows are added later we still risk
     // a race, but the lookup window matches the batch.
+    //
+    // SQLite/better-sqlite3 can only bind primitive values, so we narrow the
+    // lookup to a single (min, max) occurred_at range and dedupe in-memory
+    // afterwards. The cost is bounded — the lookup window is the batch's
+    // own occurredAt span, never broader.
     const uniqueEventTypes = Array.from(new Set(dedupKeys.map((k) => k.eventType)));
-    const occurredAts = dedupKeys.map((k) => k.occurredAt);
+    const occurredAtMs = dedupKeys.map((k) => k.occurredAt.getTime());
+    const minOccurredAt = new Date(Math.min(...occurredAtMs));
+    const maxOccurredAt = new Date(Math.max(...occurredAtMs));
     const existing = await this.telemetry
       .createQueryBuilder('te')
       .where('te.device_id = :deviceId', { deviceId: dto.deviceId })
       .andWhere('te.event_type IN (:...types)', { types: uniqueEventTypes })
-      .andWhere('te.occurred_at IN (:...occurredAts)', { occurredAts })
+      .andWhere('te.occurred_at >= :from', { from: minOccurredAt })
+      .andWhere('te.occurred_at <= :to', { to: maxOccurredAt })
       .getMany();
     const existingKeys = new Set(
       existing.map(
@@ -214,17 +222,17 @@ export class TelemetryService {
     }
 
     // Notify scoring/etc that telemetry has landed.
-    void this.redis
-      .publish(REDIS_CHANNELS.TELEMETRY_INGESTED, {
+    try {
+      this.bus.publishWork(INTERNAL_CHANNELS.TELEMETRY_INGESTED, {
         userId,
         deviceId: dto.deviceId,
         count: saved.length,
-      })
-      .catch((err) => {
-        this.logger.warn(
-          `Failed to publish telemetry-ingested: ${err instanceof Error ? err.message : String(err)}`,
-        );
       });
+    } catch (err) {
+      this.logger.warn(
+        `Failed to publish telemetry-ingested: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
 
     return {
       accepted: saved.length,

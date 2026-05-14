@@ -1,9 +1,11 @@
+import { randomUUID } from 'crypto';
 import {
+  BeforeInsert,
   Column,
   CreateDateColumn,
   Entity,
   Index,
-  PrimaryGeneratedColumn,
+  PrimaryColumn,
 } from 'typeorm';
 import type {
   TelemetryEventPayload,
@@ -21,8 +23,15 @@ import type {
 ])
 @Index('idx_telemetry_device', ['deviceId'])
 export class TelemetryEventEntity {
-  @PrimaryGeneratedColumn('uuid')
+  @PrimaryColumn('uuid')
   id!: string;
+
+  @BeforeInsert()
+  generateId(): void {
+    if (!this.id) {
+      this.id = randomUUID();
+    }
+  }
 
   @Column({ type: 'uuid', name: 'user_id' })
   userId!: string;
@@ -39,7 +48,7 @@ export class TelemetryEventEntity {
   @Column({ type: 'varchar', length: 64, name: 'event_type' })
   eventType!: TelemetryEventType;
 
-  @Column({ type: 'jsonb' })
+  @Column({ type: 'simple-json' })
   payload!: TelemetryEventPayload;
 
   @Column({ type: 'boolean', nullable: true, name: 'is_productive' })
@@ -54,9 +63,9 @@ export class TelemetryEventEntity {
   })
   confidenceScore!: number | null;
 
-  @Column({ type: 'timestamptz', name: 'occurred_at' })
+  @Column({ type: 'datetime', name: 'occurred_at' })
   occurredAt!: Date;
 
-  @CreateDateColumn({ type: 'timestamptz', name: 'received_at' })
+  @CreateDateColumn({ name: 'received_at' })
   receivedAt!: Date;
 }

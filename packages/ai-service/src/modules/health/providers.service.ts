@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 
 export interface ProviderStatus {
+  openai: boolean;
   claude: boolean;
   ollama: boolean;
   elevenlabs: boolean;
@@ -26,14 +27,21 @@ export class ProvidersService {
     if (this.cache && this.cache.expiresAt > Date.now()) {
       return this.cache.value;
     }
-    const [claude, ollama, elevenlabs] = await Promise.all([
+    const [openai, claude, ollama, elevenlabs] = await Promise.all([
+      this.pingOpenAI(),
       this.pingClaude(),
       this.pingOllama(),
       this.pingElevenLabs(),
     ]);
-    const value: ProviderStatus = { claude, ollama, elevenlabs };
+    const value: ProviderStatus = { openai, claude, ollama, elevenlabs };
     this.cache = { value, expiresAt: Date.now() + CACHE_TTL_MS };
     return value;
+  }
+
+  private async pingOpenAI(): Promise<boolean> {
+    const key = this.config.get<string>('OPENAI_API_KEY');
+    // Presence-only check — actual completions call would burn quota.
+    return Boolean(key && key.length > 10);
   }
 
   private async pingClaude(): Promise<boolean> {

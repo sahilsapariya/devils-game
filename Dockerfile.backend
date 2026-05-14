@@ -47,6 +47,12 @@ COPY --from=builder --chown=nestjs:nodejs /app/packages/backend/dist ./dist
 COPY --from=builder --chown=nestjs:nodejs /app/packages/backend/package.json ./
 COPY --from=builder --chown=nestjs:nodejs /app/node_modules ./node_modules
 
+# Pre-create the data mount point so SQLite can open files even before the
+# host volume is mounted (in dev / smoke tests). In production, /app/data is
+# bind-mounted from the host (./data on the VPS) — see docker-compose.prod.yml.
+RUN mkdir -p /app/data && chown -R nestjs:nodejs /app/data
+VOLUME ["/app/data"]
+
 USER nestjs
 EXPOSE 3001
 

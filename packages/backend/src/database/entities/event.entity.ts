@@ -1,9 +1,11 @@
+import { randomUUID } from 'crypto';
 import {
+  BeforeInsert,
   Column,
   CreateDateColumn,
   Entity,
   Index,
-  PrimaryGeneratedColumn,
+  PrimaryColumn,
 } from 'typeorm';
 
 /**
@@ -21,8 +23,15 @@ import {
 @Index('idx_events_occurred_at', ['occurredAt'])
 @Index('idx_events_unprocessed', ['isProcessed', 'eventType'])
 export class EventEntity {
-  @PrimaryGeneratedColumn('uuid')
+  @PrimaryColumn('uuid')
   id!: string;
+
+  @BeforeInsert()
+  generateId(): void {
+    if (!this.id) {
+      this.id = randomUUID();
+    }
+  }
 
   @Column({ type: 'uuid', name: 'user_id' })
   userId!: string;
@@ -33,18 +42,18 @@ export class EventEntity {
   @Column({ type: 'varchar', length: 100, name: 'event_type' })
   eventType!: string;
 
-  @Column({ type: 'jsonb', name: 'event_data' })
+  @Column({ type: 'simple-json', name: 'event_data' })
   eventData!: Record<string, unknown>;
 
-  @Column({ type: 'timestamptz', name: 'occurred_at' })
+  @Column({ type: 'datetime', name: 'occurred_at' })
   occurredAt!: Date;
 
-  @CreateDateColumn({ type: 'timestamptz', name: 'received_at' })
+  @CreateDateColumn({ name: 'received_at' })
   receivedAt!: Date;
 
   @Column({ type: 'boolean', default: false, name: 'is_processed' })
   isProcessed!: boolean;
 
-  @Column({ type: 'timestamptz', nullable: true, name: 'processed_at' })
+  @Column({ type: 'datetime', nullable: true, name: 'processed_at' })
   processedAt!: Date | null;
 }

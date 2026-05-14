@@ -7,7 +7,10 @@ import { TelemetryController } from './telemetry.controller';
 import { TelemetryService } from './telemetry.service';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([TelemetryEventEntity]), EventsModule],
+  imports: [
+    TypeOrmModule.forFeature([TelemetryEventEntity], 'telemetry'),
+    EventsModule,
+  ],
   controllers: [TelemetryController],
   providers: [TelemetryService],
   exports: [TelemetryService],

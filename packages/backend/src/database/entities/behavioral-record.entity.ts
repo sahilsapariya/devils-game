@@ -1,17 +1,26 @@
+import { randomUUID } from 'crypto';
 import {
+  BeforeInsert,
   Column,
   CreateDateColumn,
   Entity,
   Index,
-  PrimaryGeneratedColumn,
+  PrimaryColumn,
 } from 'typeorm';
 
 @Entity({ name: 'behavioral_records' })
 @Index('idx_behavioral_user_round', ['userId', 'roundId'])
 @Index('idx_behavioral_period', ['periodStart', 'periodEnd'])
 export class BehavioralRecordEntity {
-  @PrimaryGeneratedColumn('uuid')
+  @PrimaryColumn('uuid')
   id!: string;
+
+  @BeforeInsert()
+  generateId(): void {
+    if (!this.id) {
+      this.id = randomUUID();
+    }
+  }
 
   @Column({ type: 'uuid', name: 'user_id' })
   userId!: string;
@@ -19,10 +28,10 @@ export class BehavioralRecordEntity {
   @Column({ type: 'uuid', nullable: true, name: 'round_id' })
   roundId!: string | null;
 
-  @Column({ type: 'timestamptz', name: 'period_start' })
+  @Column({ type: 'datetime', name: 'period_start' })
   periodStart!: Date;
 
-  @Column({ type: 'timestamptz', name: 'period_end' })
+  @Column({ type: 'datetime', name: 'period_end' })
   periodEnd!: Date;
 
   @Column({ type: 'integer', default: 0, name: 'total_focus_minutes' })
@@ -58,12 +67,12 @@ export class BehavioralRecordEntity {
   })
   productivityScore!: number;
 
-  @Column({ type: 'jsonb', default: () => "'[]'::jsonb", name: 'anomaly_flags' })
+  @Column({ type: 'simple-json', default: () => "'[]'", name: 'anomaly_flags' })
   anomalyFlags!: string[];
 
   @Column({ type: 'integer', default: 0, name: 'event_count' })
   eventCount!: number;
 
-  @CreateDateColumn({ type: 'timestamptz', name: 'created_at' })
+  @CreateDateColumn({ name: 'created_at' })
   createdAt!: Date;
 }

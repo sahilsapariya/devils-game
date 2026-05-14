@@ -1,9 +1,11 @@
+import { randomUUID } from 'crypto';
 import {
+  BeforeInsert,
   Column,
   CreateDateColumn,
   Entity,
   Index,
-  PrimaryGeneratedColumn,
+  PrimaryColumn,
 } from 'typeorm';
 import type {
   ConsequenceSeverity,
@@ -15,8 +17,15 @@ import type {
 @Index('idx_consequences_round', ['roundId'])
 @Index('idx_consequences_unack', ['userId', 'acknowledgedAt'])
 export class ConsequenceEntity {
-  @PrimaryGeneratedColumn('uuid')
+  @PrimaryColumn('uuid')
   id!: string;
+
+  @BeforeInsert()
+  generateId(): void {
+    if (!this.id) {
+      this.id = randomUUID();
+    }
+  }
 
   @Column({ type: 'uuid', name: 'user_id' })
   userId!: string;
@@ -36,15 +45,15 @@ export class ConsequenceEntity {
   @Column({ type: 'integer', default: 0, name: 'reputation_delta' })
   reputationDelta!: number;
 
-  @Column({ type: 'jsonb', default: () => "'{}'::jsonb" })
+  @Column({ type: 'simple-json', default: () => "'{}'" })
   metadata!: Record<string, unknown>;
 
-  @Column({ type: 'timestamptz', nullable: true, name: 'acknowledged_at' })
+  @Column({ type: 'datetime', nullable: true, name: 'acknowledged_at' })
   acknowledgedAt!: Date | null;
 
-  @Column({ type: 'timestamptz', name: 'issued_at' })
+  @Column({ type: 'datetime', name: 'issued_at' })
   issuedAt!: Date;
 
-  @CreateDateColumn({ type: 'timestamptz', name: 'created_at' })
+  @CreateDateColumn({ name: 'created_at' })
   createdAt!: Date;
 }

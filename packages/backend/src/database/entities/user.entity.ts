@@ -1,10 +1,12 @@
+import { randomUUID } from 'crypto';
 import {
+  BeforeInsert,
   Column,
   CreateDateColumn,
   Entity,
   Index,
   OneToMany,
-  PrimaryGeneratedColumn,
+  PrimaryColumn,
   UpdateDateColumn,
 } from 'typeorm';
 import type { UserPreferences } from '@extraction/shared';
@@ -14,8 +16,15 @@ import { RoundEntity } from './round.entity';
 @Entity({ name: 'users' })
 @Index('idx_users_email', ['email'], { unique: true })
 export class UserEntity {
-  @PrimaryGeneratedColumn('uuid')
+  @PrimaryColumn('uuid')
   id!: string;
+
+  @BeforeInsert()
+  generateId(): void {
+    if (!this.id) {
+      this.id = randomUUID();
+    }
+  }
 
   @Column({ type: 'varchar', length: 255, unique: true })
   email!: string;
@@ -38,22 +47,22 @@ export class UserEntity {
   @Column({ type: 'integer', default: 3, name: 'difficulty_ceiling' })
   difficultyCeiling!: number;
 
-  @Column({ type: 'jsonb', default: () => "'{}'::jsonb" })
+  @Column({ type: 'simple-json', default: () => "'{}'" })
   preferences!: UserPreferences;
 
   @Column({ type: 'boolean', default: true, name: 'is_active' })
   isActive!: boolean;
 
-  @Column({ type: 'timestamptz', nullable: true, name: 'email_verified_at' })
+  @Column({ type: 'datetime', nullable: true, name: 'email_verified_at' })
   emailVerifiedAt!: Date | null;
 
-  @Column({ type: 'timestamptz', nullable: true, name: 'last_login_at' })
+  @Column({ type: 'datetime', nullable: true, name: 'last_login_at' })
   lastLoginAt!: Date | null;
 
-  @CreateDateColumn({ type: 'timestamptz', name: 'created_at' })
+  @CreateDateColumn({ name: 'created_at' })
   createdAt!: Date;
 
-  @UpdateDateColumn({ type: 'timestamptz', name: 'updated_at' })
+  @UpdateDateColumn({ name: 'updated_at' })
   updatedAt!: Date;
 
   @OneToMany(() => MissionEntity, (mission) => mission.user)

@@ -18,7 +18,7 @@ and consequence.
 ```
 backend ──► POST /internal/generate-announcement ─► ai-service
                                                      │
-                                                     ├─► TextGen (Claude → Ollama fallback)
+                                                     ├─► TextGen (OpenAI → Claude → Ollama fallback chain)
                                                      ├─► QualityGates (deterministic)
                                                      ├─► TTS (ElevenLabs → Ollama TTS → text-only)
                                                      └─► VoiceStorage (local cache, S3-pluggable)
@@ -31,10 +31,21 @@ backend ──► POST /internal/analyze-behavior ──────► ai-servi
 
 ### Provider fallback chains
 
-- **Text:** `USE_PROVIDER` (default `claude`) → other provider on timeout/error
+- **Text:** configured `AI_PROVIDER` (default `openai`) → openai → claude → ollama.
+  Each provider failure logs a reason and proceeds to the next.
 - **TTS:** ElevenLabs → Ollama TTS (if `OLLAMA_TTS_MODEL` set) → `voiceUrl: null` (caller renders text-only)
 - **Behavioral AI insights:** AnalyzerService falls back to deterministic
   insights if AI layer fails. Deterministic insights always present.
+
+### Token efficiency
+
+- A tight `<300` token system prompt is shared by all three providers.
+- User prompts are compact JSON of behavioural facts (not prose) so an
+  announcement call typically costs `< 1000` input tokens / `< 200` output tokens.
+- Behavioural analysis is `< 2000` input tokens / `< 300` output tokens.
+- OpenAI calls use `response_format: json_schema` so structured output is enforced.
+- Static prefixes (e.g. "Operational check.") are concatenated server-side so
+  the AI only generates the variable tail.
 
 ---
 
@@ -73,7 +84,9 @@ INTERNAL_API_TOKEN=<token> bash packages/ai-service/scripts/smoke-test.sh
 | --- | --- | --- | --- |
 | `PORT` | no | `4001` | HTTP port |
 | `INTERNAL_API_TOKEN` | prod only | (unset) | Shared secret for `X-Internal-Token`. Unset → dev mode (warning logged). |
-| `USE_PROVIDER` | no | `claude` | `claude` or `ollama` |
+| `AI_PROVIDER` | no | `openai` | `openai`, `claude`, or `ollama` (preferred primary; fallback chain runs through all configured providers) |
+| `OPENAI_API_KEY` | if OpenAI | — | OpenAI SDK key |
+| `OPENAI_MODEL` | no | `gpt-5.4-nano` | Token-efficient default |
 | `ANTHROPIC_API_KEY` | if Claude | — | Anthropic SDK key |
 | `ANTHROPIC_MODEL` | no | `claude-haiku-4-5-20251001` | Cost/latency optimized |
 | `ELEVENLABS_API_KEY` | if TTS | — | |
@@ -112,8 +125,17 @@ Returns liveness + provider status (30s-cached):
 {
   "ok": true,
   "service": "ai-service",
-  "providers": { "claude": true, "ollama": false, "elevenlabs": true }
+  "providers": { "openai": true, "claude": false, "ollama": false, "elevenlabs": true }
 }
+```
+
+### `GET /internal/cache/stats`
+
+Returns announcement cache size + hit/miss counts. Useful for monitoring
+token spend (high hit rate = low spend).
+
+```json
+{ "size": 12, "hits": 230, "misses": 47, "hitRate": 0.8303 }
 ```
 
 ### `POST /internal/generate-announcement`

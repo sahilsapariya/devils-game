@@ -74,6 +74,9 @@ bin/
 *.sqlite
 *.sqlite-journal
 *.db
+*.db-wal
+*.db-shm
+packages/backend/data/*.db*
 
 # Local development
 .cache/

@@ -1,0 +1,74 @@
+# PROJECT EXTRACTION — Caddy reverse proxy template
+#
+# Copy this file to `Caddyfile` and replace `extraction.example.com` with your
+# real domain. Caddy will automatically obtain and renew a TLS certificate
+# from Let's Encrypt the first time it starts.
+#
+# For local-only testing without a public domain, replace the host with
+# `localhost` (Caddy issues a self-signed cert) or `:80` (HTTP only).
+
+{
+    # Global options
+    email {$ACME_EMAIL:admin@example.com}
+}
+
+extraction.example.com {
+    # ----- Routing ------------------------------------------------------------
+
+    # REST API (NestJS controllers under /api/*)
+    handle /api/* {
+        reverse_proxy backend:3001
+    }
+
+    # Socket.io / WebSocket namespace (operational events).
+    # Force HTTP/1.1 between Caddy and the backend for WebSocket compatibility.
+    handle /operational/* {
+        reverse_proxy backend:3001 {
+            transport http {
+                versions h1
+            }
+        }
+    }
+
+    # Public health probe (used by uptime checks, GH Actions deploy, etc.)
+    handle /health {
+        reverse_proxy backend:3001
+    }
+
+    # AI service exposed under /ai-internal/* — protected by
+    # `X-Internal-Token` header (validated inside the ai-service).
+    # Most calls come from the backend over the Docker network and skip Caddy.
+    handle /ai-internal/* {
+        uri strip_prefix /ai-internal
+        reverse_proxy ai-service:4001
+    }
+
+    # Default — anything else gets a 404
+    handle {
+        respond "Not found" 404
+    }
+
+    # ----- Transport / compression -------------------------------------------
+
+    encode gzip zstd
+
+    # ----- Security headers ---------------------------------------------------
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "no-referrer"
+        -Server
+    }
+
+    # ----- Access logging -----------------------------------------------------
+    # Logs are mounted from the host at ./data/logs/caddy/ — see docker-compose.
+
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 100MiB
+            roll_keep 5
+        }
+    }
+}

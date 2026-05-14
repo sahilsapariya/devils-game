@@ -1,13 +1,14 @@
-import { RedisService } from './redis.service';
+import { CacheService } from './cache.service';
 
 /**
- * Memoizes the result of an async instance method in Redis.
+ * Memoizes the result of an async instance method in the in-memory CacheService.
  *
- * The decorated class MUST expose a `redis: RedisService` property
- * (typically through constructor injection).
+ * The decorated class MUST expose a `cacheService: CacheService` property
+ * (typically through constructor injection). For backward compatibility, the
+ * decorator also looks at a `cache` property as a fallback.
  *
- * Cache key: `cache:<className>:<method>:<JSON.stringify(args)>` (after the
- * RedisService key prefix). Avoid using on methods with non-serializable args.
+ * Cache key: `<className>:<method>:<JSON.stringify(args)>` unless `keyPrefix`
+ * is supplied. Avoid using on methods with non-serializable args.
  *
  * Usage:
  *   @Cacheable({ ttlSeconds: 60 })
@@ -36,27 +37,26 @@ export function Cacheable(options: CacheableOptions): MethodDecorator {
     }
 
     const namespace =
-      options.keyPrefix ??
-      `cache:${target.constructor.name}:${String(propertyKey)}`;
+      options.keyPrefix ?? `${target.constructor.name}:${String(propertyKey)}`;
 
     descriptor.value = async function cached(
-      this: { redis?: RedisService },
+      this: { cacheService?: CacheService; cache?: CacheService },
       ...args: unknown[]
     ): Promise<unknown> {
-      const redis = this.redis;
-      if (!redis) {
-        // Graceful degradation — if Redis isn't available on `this`, just call through.
+      const cache = this.cacheService ?? this.cache;
+      if (!cache) {
+        // Graceful degradation — if cache isn't available on `this`, just call through.
         return original.apply(this, args);
       }
 
       const key = `${namespace}:${JSON.stringify(args)}`;
-      const cached = await redis.get<unknown>(key);
-      if (cached !== null) {
+      const cached = cache.get<unknown>(key);
+      if (cached !== undefined) {
         return cached;
       }
 
       const result = await original.apply(this, args);
-      await redis.set(key, result, options.ttlSeconds);
+      cache.set(key, result, options.ttlSeconds);
       return result;
     } as AsyncMethod;
 

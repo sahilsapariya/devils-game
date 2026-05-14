@@ -1,4 +1,6 @@
+import { randomUUID } from 'crypto';
 import {
+  BeforeInsert,
   Column,
   CreateDateColumn,
   Entity,
@@ -6,7 +8,7 @@ import {
   JoinColumn,
   ManyToOne,
   OneToMany,
-  PrimaryGeneratedColumn,
+  PrimaryColumn,
   UpdateDateColumn,
 } from 'typeorm';
 import type { MissionObjective, MissionStatus } from '@extraction/shared';
@@ -17,8 +19,15 @@ import { RoundEntity } from './round.entity';
 @Index('idx_missions_user_status', ['userId', 'status'])
 @Index('idx_missions_scheduled_start', ['scheduledStart'])
 export class MissionEntity {
-  @PrimaryGeneratedColumn('uuid')
+  @PrimaryColumn('uuid')
   id!: string;
+
+  @BeforeInsert()
+  generateId(): void {
+    if (!this.id) {
+      this.id = randomUUID();
+    }
+  }
 
   @Column({ type: 'uuid', name: 'user_id' })
   userId!: string;
@@ -29,7 +38,7 @@ export class MissionEntity {
   @Column({ type: 'text', default: '' })
   description!: string;
 
-  @Column({ type: 'jsonb', default: () => "'[]'::jsonb" })
+  @Column({ type: 'simple-json', default: () => "'[]'" })
   objectives!: MissionObjective[];
 
   @Column({ type: 'varchar', length: 32, default: 'draft' })
@@ -38,10 +47,10 @@ export class MissionEntity {
   @Column({ type: 'integer', default: 0 })
   priority!: number;
 
-  @Column({ type: 'timestamptz', nullable: true, name: 'scheduled_start' })
+  @Column({ type: 'datetime', nullable: true, name: 'scheduled_start' })
   scheduledStart!: Date | null;
 
-  @Column({ type: 'timestamptz', nullable: true, name: 'scheduled_end' })
+  @Column({ type: 'datetime', nullable: true, name: 'scheduled_end' })
   scheduledEnd!: Date | null;
 
   @Column({ type: 'integer', default: 0, name: 'total_rounds' })
@@ -50,10 +59,10 @@ export class MissionEntity {
   @Column({ type: 'integer', default: 0, name: 'completed_rounds' })
   completedRounds!: number;
 
-  @CreateDateColumn({ type: 'timestamptz', name: 'created_at' })
+  @CreateDateColumn({ name: 'created_at' })
   createdAt!: Date;
 
-  @UpdateDateColumn({ type: 'timestamptz', name: 'updated_at' })
+  @UpdateDateColumn({ name: 'updated_at' })
   updatedAt!: Date;
 
   @ManyToOne(() => UserEntity, (user) => user.missions, {
