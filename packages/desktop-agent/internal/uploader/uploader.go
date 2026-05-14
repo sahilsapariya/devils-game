@@ -99,7 +99,7 @@ func New(store *storage.Store, opts Options) *Uploader {
 		DeviceID:     opts.DeviceID,
 		HmacKey:      key,
 		AgentVersion: opts.AgentVersion,
-		Source:       "desktop",
+		Source:       "desktop_agent",
 		Interval:     opts.Interval,
 		BatchSize:    opts.BatchSize,
 		MaxRetries:   5,

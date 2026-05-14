@@ -60,7 +60,7 @@ export function OperationalInput({
         style={[
           styles.fieldShell,
           focused && styles.fieldShellFocused,
-          error && styles.fieldShellError,
+          !!error && styles.fieldShellError,
         ]}
       >
         <Text style={styles.cursor}>{'>'}</Text>

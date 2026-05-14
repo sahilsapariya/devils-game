@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  Allow,
   IsBoolean,
   IsEnum,
   IsInt,
@@ -46,9 +47,11 @@ export class AnnouncementContextDto {
   @IsInt()
   consecutiveFailures?: number;
 
+  // recentPattern is permitted to be either a free-form summary string or a
+  // structured object emitted by the backend's behavioral analysis pipeline.
   @IsOptional()
-  @IsString()
-  recentPattern?: string;
+  @Allow()
+  recentPattern?: unknown;
 
   @IsOptional()
   @IsString()
@@ -57,6 +60,24 @@ export class AnnouncementContextDto {
   @IsOptional()
   @IsString()
   recoveryOpportunity?: string;
+
+  // Backend-correlation fields. These are passed through for logging and
+  // template rendering; we don't constrain their shape further.
+  @IsOptional()
+  @IsString()
+  roundId?: string;
+
+  @IsOptional()
+  @IsString()
+  userId?: string;
+
+  @IsOptional()
+  @IsInt()
+  streak?: number;
+
+  @IsOptional()
+  @IsNumber()
+  reputation?: number;
 }
 
 export class GenerateAnnouncementDto {

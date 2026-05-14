@@ -41,7 +41,7 @@ export interface AnnouncementContext {
   focusMinutes?: number;
   state?: string;
   consecutiveFailures?: number;
-  recentPattern?: string;
+  recentPattern?: unknown;
   recommendation?: string;
   recoveryOpportunity?: string;
   toneGuidance?: string;
@@ -81,8 +81,20 @@ export function buildPressureEscalationPrompt(ctx: AnnouncementContext): string 
 }
 
 export function buildBehavioralAnalysisPrompt(ctx: AnnouncementContext): string {
+  const pattern =
+    ctx.recentPattern === undefined || ctx.recentPattern === null
+      ? 'unspecified'
+      : typeof ctx.recentPattern === 'string'
+      ? ctx.recentPattern
+      : (() => {
+          try {
+            return JSON.stringify(ctx.recentPattern);
+          } catch {
+            return 'unspecified';
+          }
+        })();
   return [
-    `Behavioral pattern detected: ${ctx.recentPattern ?? 'unspecified'}.`,
+    `Behavioral pattern detected: ${pattern}.`,
     ctx.recommendation ? `Recommendation: ${ctx.recommendation}.` : '',
     `Generate a procedural pattern-insight announcement. State the observation factually; do not coach.`,
     ctx.toneGuidance ? `Tone guidance: ${ctx.toneGuidance}.` : '',

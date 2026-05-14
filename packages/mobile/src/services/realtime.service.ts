@@ -280,7 +280,7 @@ class RealtimeService {
     event: E,
     handler: (payload: RealtimeEventPayload<E>) => void,
   ): void {
-    socket.on(event, (...args: unknown[]) => {
+    socket.on(event as string, (...args: unknown[]) => {
       const payload = args[0] as RealtimeEventPayload<E>;
       try {
         handler(payload);

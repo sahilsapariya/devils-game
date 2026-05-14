@@ -90,13 +90,13 @@ export async function apiRequest<T>(
   }
 
   if (!response.ok) {
-    const message =
-      (parsed &&
-        typeof parsed === 'object' &&
-        'message' in (parsed as Record<string, unknown>) &&
-        typeof (parsed as Record<string, unknown>).message === 'string' &&
-        ((parsed as Record<string, unknown>).message as string)) ||
-      `Request failed with status ${response.status}`;
+    let message: string = `Request failed with status ${response.status}`;
+    if (parsed && typeof parsed === 'object') {
+      const obj = parsed as Record<string, unknown>;
+      if (typeof obj.message === 'string' && obj.message.length > 0) {
+        message = obj.message;
+      }
+    }
     throw buildError(message, response.status, parsed);
   }
 

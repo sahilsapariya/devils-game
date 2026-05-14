@@ -5,8 +5,8 @@
     "rootDir": "./src",
     "baseUrl": "./",
     "paths": {
-      "@extraction/shared": ["../shared/src/index.ts"],
-      "@extraction/shared/*": ["../shared/src/*"]
+      "@extraction/shared": ["../shared/dist/index.d.ts"],
+      "@extraction/shared/*": ["../shared/dist/*"]
     },
     "types": ["node", "jest"]
   },

@@ -5,8 +5,9 @@
   "description": "PROJECT EXTRACTION backend (NestJS): event hub, mission engine, state machine",
   "main": "dist/main.js",
   "scripts": {
-    "prebuild": "rm -rf dist",
+    "prebuild": "rm -rf dist && npm --prefix ../shared run build",
     "build": "nest build",
+    "pretypecheck": "npm --prefix ../shared run build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "dev": "nest start --watch",
