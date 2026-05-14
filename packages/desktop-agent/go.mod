@@ -10,7 +10,7 @@ require (
 )
 
 require (
-	al.essio.dev/pkg/shellescape v1.5.0 // indirect
+	github.com/alessio/shellescape v1.4.1 // indirect
 	github.com/danieljoos/wincred v1.2.1 // indirect
 	github.com/getlantern/context v0.0.0-20190109183933-c447772a6520 // indirect
 	github.com/getlantern/errors v0.0.0-20190325191628-abdb3e3e36f7 // indirect
